@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/vimalyad/osspipeline/internal/model"
+	"time"
 )
 
 // Store reads and writes candidate files under a root directory.
@@ -169,4 +170,94 @@ func (s *Store) SaveRepoFacts(f *model.RepoFacts) error {
 		return err
 	}
 	return os.Rename(tmp, final)
+}
+
+// Rejections fall into two kinds.
+//
+// Structural ones are facts about the repository or a human's decision, and do
+// not change on their own. Transient ones describe a moment in time -- someone
+// was mid-pull-request, someone had just claimed it, the thread had not
+// converged yet -- and all of those expire.
+//
+// Treating every rejection as permanent quietly discards the best candidates:
+// the two strongest issues found on the first real sweep were both rejected as
+// "claimed", and claims lapse.
+var (
+	transientRejections = []string{
+		"contest=active_pr", "contest=claimed", "claimed by", "deferred:",
+		"thread has not converged", "no maintainer acceptance",
+		"no stated approach", "harvest/brief failed",
+	}
+	structuralRejections = []string{
+		"bans ai", "no contributing", "requires a cla", "manually excluded",
+		"already touched by another of your accounts", "docs/typo-only",
+		"no test suite", "unreceptive",
+	}
+)
+
+// IsTransient reports whether a rejection reason expires.
+//
+// Structural wins over transient when both match: a reason can mention a
+// deferral and a missing CONTRIBUTING file, and the second one is still true
+// next week.
+func IsTransient(reason string) bool {
+	low := strings.ToLower(reason)
+	for _, m := range structuralRejections {
+		if strings.Contains(low, m) {
+			return false
+		}
+	}
+	for _, m := range transientRejections {
+		if strings.Contains(low, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// RejectedAt is when the candidate was last rejected, from its own history.
+func RejectedAt(c *model.Candidate) (time.Time, bool) {
+	for i := len(c.History) - 1; i >= 0; i-- {
+		if model.Status(c.History[i].To) != model.StatusRejected {
+			continue
+		}
+		if t, err := time.Parse(time.RFC3339, c.History[i].At); err == nil {
+			return t, true
+		}
+		// A hand-edited or synthetic marker: keep looking rather than
+		// treating an unparseable date as "never".
+	}
+	return time.Time{}, false
+}
+
+// ShouldReconsider reports whether a candidate deserves another look.
+//
+// Anything never seen is always considered. Anything live or terminal-by-
+// success is not. A rejection is revisited only when it was transient and the
+// cooldown has passed -- and never when a human made it, because asking again
+// about something a person already declined is how a pipeline becomes noise.
+func (s *Store) ShouldReconsider(slug string, now time.Time, afterDays int) bool {
+	p := s.PathFor(slug)
+	info, err := os.Stat(p)
+	if err != nil {
+		return true // never seen
+	}
+	c, err := s.Load(slug)
+	if err != nil {
+		return true // unreadable: look again rather than skip silently
+	}
+	if c.Status != model.StatusRejected {
+		return false
+	}
+	if strings.HasPrefix(strings.ToLower(c.RejectReason), "human rejection") {
+		return false
+	}
+	if !IsTransient(c.RejectReason) {
+		return false
+	}
+	when, ok := RejectedAt(c)
+	if !ok {
+		when = info.ModTime()
+	}
+	return now.Sub(when) >= time.Duration(afterDays)*24*time.Hour
 }

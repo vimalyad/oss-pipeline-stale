@@ -58,8 +58,13 @@ var ignoredActions = []string{
 }
 
 var (
-	testCmdRe  = regexp.MustCompile(`(^|[;&|\s])(pytest|go test|cargo test|npm test|npm run test|yarn test|pnpm test|tox|nox|make test|ctest|mvn test|gradle test|bundle exec rspec|python -m pytest)\b`)
-	lintCmdRe  = regexp.MustCompile(`(^|[;&|\s])(ruff|golangci-lint|go vet|eslint|black|mypy|flake8|clippy|cargo fmt|pre-commit|gofmt|isort|shellcheck|taplo|toml-fmt)\b`)
+	testCmdRe = regexp.MustCompile(`(^|[;&|\s])(pytest|go test|cargo test|npm test|npm run test|yarn test|pnpm test|tox|nox|make test|ctest|mvn test|gradle test|bundle exec rspec|python -m pytest)\b`)
+	// `go mod tidy -diff` reports without writing; plain `go mod tidy` rewrites
+	// go.mod and go.sum, which would put our own tooling's changes into
+	// someone else's pull request. Only the reporting form may be run, so only
+	// it is classified -- the bare form stays unclassified and is recorded
+	// rather than executed.
+	lintCmdRe  = regexp.MustCompile(`(^|[;&|\s])(go mod tidy -diff|ruff|golangci-lint|go vet|eslint|black|mypy|flake8|clippy|cargo fmt|pre-commit|gofmt|isort|shellcheck|taplo|toml-fmt)\b`)
 	instCmdRe  = regexp.MustCompile(`(^|[;&|\s])(pip install|pip3 install|uv pip|uv sync|poetry install|go mod download|npm ci|npm install|yarn install|pnpm install|cargo fetch|pixi install|conda install|make deps|bundle install|python setup\.py|pip download)\b`)
 	buildCmdRe = regexp.MustCompile(`(^|[;&|\s])(go build|go vet|cargo build|npm run build|yarn build|pnpm build|make build|cmake --build|mvn package|python -m build)\b`)
 	aptCmdRe   = regexp.MustCompile(`(?m)^\s*(?:sudo\s+)?apt(?:-get)?\s+install\s+(.*)$`)

@@ -168,3 +168,62 @@ func TestCheckBodyCatchesTranscriptLanguage(t *testing.T) {
 		t.Errorf("false positive on a normal body: %v", got)
 	}
 }
+
+// TestBodyForbiddenCatchesMessagesToTheOperator is the second incident, found
+// by a dry run rather than by reading.
+//
+// The list held "I could not" and "I was unable", and this body was still
+// passed as clean -- a model answering the pipeline rather than describing a
+// change, complete with a request to paste the diff. Enumerating phrases does
+// not work; the shape does.
+func TestBodyForbiddenCatchesMessagesToTheOperator(t *testing.T) {
+	leaked := []string{
+		`I don't see any diff content in your message — the request says "the diff on stdin" but none was included.`,
+		"Could you paste the diff itself, or point me to a commit range?",
+		"I can't write an accurate description without seeing the actual code changes.",
+		"I cannot verify this claim.",
+		"Let me know if you want me to extend it.",
+		"I was unable to run the tests.",
+		"I could not reproduce the failure.",
+		"Please provide the diff so I can describe it.",
+	}
+	for _, body := range leaked {
+		if got := CheckBody(body); len(got) == 0 {
+			t.Errorf("passed as clean: %q", body)
+		}
+	}
+}
+
+// TestBodyForbiddenStillCatchesTooling.
+func TestBodyForbiddenStillCatchesTooling(t *testing.T) {
+	for _, body := range []string{
+		"Generated with Claude.", "Prepared with AI assistance.",
+		"The sandbox denied the command.", "An assistant reviewed this.",
+		"This required approval in the harness.",
+	} {
+		if got := CheckBody(body); len(got) == 0 {
+			t.Errorf("passed as clean: %q", body)
+		}
+	}
+}
+
+// TestAGenuineDescriptionIsNotRejected. The bias is towards catching, but a
+// normal pull request body must still get through or every submission falls
+// back to the minimal form.
+func TestAGenuineDescriptionIsNotRejected(t *testing.T) {
+	for _, body := range []string{
+		"`.helmignore` patterns were not applied to symlinked paths, so a chart " +
+			"packaged from a directory containing a symlink shipped files the " +
+			"ignore file excluded.\n\n**Change.** `symwalk` now resolves each link " +
+			"and applies the same filter to the target, matching the behaviour " +
+			"`Walk` documents.\n\n**Verification.** `go test ./internal/sympath " +
+			"./pkg/chart/v2/loader` passes; the new case fails before the change.",
+		"Adds a regression test for the reported crash and fixes the nil dereference in `Load`.",
+		"The parser accepted trailing commas. It no longer does, and the existing " +
+			"fixtures cover both forms.",
+	} {
+		if got := CheckBody(body); len(got) != 0 {
+			t.Errorf("a genuine description was rejected for %v:\n%s", got, body)
+		}
+	}
+}

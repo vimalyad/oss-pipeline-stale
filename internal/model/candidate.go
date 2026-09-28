@@ -105,8 +105,12 @@ type Candidate struct {
 	WatchSeen     []string         `json:"watch_seen"`
 	QueuedReplies []map[string]any `json:"queued_replies"`
 	DisclosedAI   bool             `json:"disclosed_ai"`
-	Credits       string           `json:"credits"`
-	History       []HistoryEntry   `json:"history"`
+	// TookOver records that this branch actually continued someone else's
+	// commits, rather than being cut fresh. The pull request body says one of
+	// two different things depending on it, and only one of them is true.
+	TookOver bool           `json:"took_over"`
+	Credits  string         `json:"credits"`
+	History  []HistoryEntry `json:"history"`
 }
 
 // Slug is the filename stem and the identifier used everywhere in the CLI.

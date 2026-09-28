@@ -335,7 +335,10 @@ func TestComposeBodyFetchesAndUsesTheBranchDiff(t *testing.T) {
 // "fix: MPS: torch 2.14 ... fail at >= 8192 input elements" -- doubled colon,
 // truncated, and about the symptom.
 func TestTitleDescribesTheChangeNotTheBug(t *testing.T) {
-	g := &fakeGit{replies: map[string]string{"log -1": "docs: clarify the MPS element limit"}}
+	g := &fakeGit{replies: map[string]string{
+		"rev-list --count": "1",
+		"log -1":           "docs: clarify the MPS element limit",
+	}}
 	if got := Title(context.Background(), g, candidate(), "/clone"); got != "docs: clarify the MPS element limit" {
 		t.Fatalf("title = %q, want the commit subject", got)
 	}
@@ -349,6 +352,7 @@ func TestBodyAppendsFixesAndCredits(t *testing.T) {
 	c := candidate()
 	c.Contest = model.ContestStalePR
 	c.PRSignal = &model.PRSignal{Number: 77, Author: "earlier-person"}
+	c.TookOver = true
 	body := Body(c, "A description.")
 	if !strings.Contains(body, "Fixes #4201") {
 		t.Error("no Fixes line")
@@ -442,7 +446,11 @@ func TestAFailedPushDoesNotOpenAPullRequest(t *testing.T) {
 func TestPrepareProducesAPlanWithoutTouchingGitHub(t *testing.T) {
 	gh := &fakeGH{}
 	p := Prepare(context.Background(), &fakeJudge{out: "A clear description."},
-		&fakeGit{replies: map[string]string{"log -1": "fix: the thing"}},
+		&fakeGit{replies: map[string]string{
+			"rev-list --count":        "1",
+			"log -1":                  "fix: the thing",
+			"diff origin/main...HEAD": "diff --git a/x b/x\n+1",
+		}},
 		candidate(), "/clone", "pytest -q", ident)
 	if p.Title != "fix: the thing" || p.Head != "login:fix/issue-4201" || p.Base != "main" {
 		t.Fatalf("plan = %+v", p)
@@ -541,5 +549,92 @@ func TestOnlySubmitPublishes(t *testing.T) {
 		t.Fatalf("something outside internal/submit publishes:\n  %s\n"+
 			"every branch must reach a maintainer through Preflight and the body re-check",
 			strings.Join(lines, "\n  "))
+	}
+}
+
+// TestTitleIsNeverAnUpstreamCommit. A dry run has committed nothing, so HEAD is
+// still upstream's -- and reading its subject produced the title
+// "chore(deps): bump the github-actions group with 4 updates (#32677)" for a
+// symlink fix.
+func TestTitleIsNeverAnUpstreamCommit(t *testing.T) {
+	upstream := &fakeGit{replies: map[string]string{
+		"rev-list --count": "0",
+		"log -1":           "chore(deps): bump the github-actions group with 4 updates (#32677)",
+	}}
+	got := Title(context.Background(), upstream, candidate(), "/clone")
+	if strings.Contains(got, "chore(deps)") {
+		t.Fatalf("title = %q; that commit is upstream's, not ours", got)
+	}
+	if !strings.HasPrefix(got, "fix: MPS svd fails") {
+		t.Errorf("title = %q, want the issue title as the fallback", got)
+	}
+
+	// Once this branch has a commit of its own, that subject is the title.
+	ours := &fakeGit{replies: map[string]string{
+		"rev-list --count": "2",
+		"log -1":           "fix: apply .helmignore to symlink targets",
+	}}
+	if got := Title(context.Background(), ours, candidate(), "/clone"); got != "fix: apply .helmignore to symlink targets" {
+		t.Errorf("title = %q", got)
+	}
+}
+
+// TestAnEmptyDiffNeverReachesTheModel is the root cause of the worst thing the
+// dry run produced. Asked to describe nothing, the model answered the operator
+// -- "I don't see any diff content in your message ... Could you paste the diff
+// itself?" -- and that reply was composed into a pull request body.
+func TestAnEmptyDiffNeverReachesTheModel(t *testing.T) {
+	j := &fakeJudge{out: "I don't see any diff content in your message."}
+	g := &fakeGit{} // every git call returns empty
+	c := candidate()
+	c.Brief = &model.Brief{AcceptanceCriteria: []string{"symlinks are ignored"}}
+
+	body := ComposeBody(context.Background(), j, g, c, "/clone", "go test ./...")
+	if j.stdin != "" || j.prompt != "" {
+		t.Fatal("the model was asked to describe an empty diff")
+	}
+	if !strings.Contains(body, "Addresses #4201") || !strings.Contains(body, "symlinks are ignored") {
+		t.Errorf("fallback is not usable:\n%s", body)
+	}
+}
+
+// TestUncommittedWorkIsDescribed: a dry run's change lives entirely in the
+// working tree, and describing only committed work would mean describing
+// nothing.
+func TestUncommittedWorkIsDescribed(t *testing.T) {
+	j := &fakeJudge{out: "A clear description of the change."}
+	g := &fakeGit{replies: map[string]string{
+		"diff origin/main...HEAD": "",
+		"diff HEAD":               "diff --git a/internal/sympath/walk.go b/internal/sympath/walk.go\n+fix",
+	}}
+	ComposeBody(context.Background(), j, g, candidate(), "/clone", "go test")
+	if !strings.Contains(j.stdin, "internal/sympath/walk.go") {
+		t.Fatalf("the working-tree change did not reach the model: %q", j.stdin)
+	}
+}
+
+// TestCreditDoesNotClaimCommitsWeNeverTook: claiming the earlier commits are
+// preserved when the branch was cut fresh from upstream tells a maintainer
+// something they can check and find false.
+func TestCreditDoesNotClaimCommitsWeNeverTook(t *testing.T) {
+	c := candidate()
+	c.Contest = model.ContestStalePR
+	c.PRSignal = &model.PRSignal{Number: 32116, Author: "Zakharden"}
+
+	fresh := Body(c, "A description.")
+	if strings.Contains(fresh, "preserved in the history") {
+		t.Errorf("claimed commits that were never taken over:\n%s", fresh)
+	}
+	if !strings.Contains(fresh, "@Zakharden") || !strings.Contains(fresh, "fresh branch") {
+		t.Errorf("the earlier author is not credited honestly:\n%s", fresh)
+	}
+	if c.Credits != "Zakharden" {
+		t.Errorf("credits = %q", c.Credits)
+	}
+
+	c.TookOver = true
+	took := Body(c, "A description.")
+	if !strings.Contains(took, "preserved in the history") {
+		t.Errorf("a real takeover does not say so:\n%s", took)
 	}
 }

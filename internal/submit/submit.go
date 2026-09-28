@@ -245,7 +245,18 @@ func Commit(ctx context.Context, g Git, dir, message string) error {
 func ComposeBody(ctx context.Context, j Judge, g Git, c *model.Candidate, dir, verification string) string {
 	base := g.DefaultBranch(ctx, dir)
 	_, _ = g.Git(ctx, dir, "fetch", "-q", "origin", base)
-	diff, _ := g.Git(ctx, dir, "diff", "origin/"+base+"...HEAD")
+	// Committed work and uncommitted work both. A dry run has not committed
+	// anything, so asking only for origin/base...HEAD hands the model an empty
+	// string -- and a model given nothing to describe answers the operator
+	// instead: "I don't see any diff content in your message ... Could you
+	// paste the diff itself?" That reply was then composed into a pull request
+	// body. Nothing downstream can rescue a prompt that contained no change.
+	committed, _ := g.Git(ctx, dir, "diff", "origin/"+base+"...HEAD")
+	working, _ := g.Git(ctx, dir, "diff", "HEAD")
+	diff := strings.TrimSpace(committed + "\n" + working)
+	if diff == "" {
+		return fallbackBody(c, verification)
+	}
 
 	prompt := llm.Render(bodyPrompt, map[string]string{
 		"repo": c.Repo, "issue": strconv.Itoa(c.Issue), "title": c.Title,
@@ -287,9 +298,18 @@ func fallbackBody(c *model.Candidate, verification string) string {
 // written is the right summary; the issue title is only the fallback for when
 // there is no commit yet.
 func Title(ctx context.Context, g Git, c *model.Candidate, dir string) string {
-	if subject, err := g.Git(ctx, dir, "log", "-1", "--format=%s"); err == nil {
-		if s := strings.TrimSpace(subject); s != "" {
-			return s
+	// Only a commit this branch made. A dry run has committed nothing, so HEAD
+	// is still upstream's -- and reading its subject produced the title
+	// "chore(deps): bump the github-actions group with 4 updates (#32677)" for
+	// a symlink fix. The count is what distinguishes our work from theirs.
+	base := g.DefaultBranch(ctx, dir)
+	if out, err := g.Git(ctx, dir, "rev-list", "--count", "origin/"+base+"..HEAD"); err == nil {
+		if n, cerr := strconv.Atoi(strings.TrimSpace(out)); cerr == nil && n > 0 {
+			if subject, err := g.Git(ctx, dir, "log", "-1", "--format=%s"); err == nil {
+				if s := strings.TrimSpace(subject); s != "" {
+					return s
+				}
+			}
 		}
 	}
 	return "fix: " + text.Clip(c.Title, 70)
@@ -304,9 +324,19 @@ func Body(c *model.Candidate, summary string) string {
 	// A takeover credits the earlier author in the body, and records it on the
 	// candidate so the ledger can show it later.
 	if c.Contest == model.ContestStalePR && c.PRSignal != nil {
-		fmt.Fprintf(&b, "This builds on the earlier work in #%d by @%s; "+
-			"their commits are preserved in the history.\n\n",
-			c.PRSignal.Number, c.PRSignal.Author)
+		// Two wordings, because only one of them is true at a time. Claiming
+		// the earlier commits are preserved when the branch was cut fresh from
+		// upstream tells a maintainer something they can check and find false,
+		// which is worse than not crediting at all.
+		if c.TookOver {
+			fmt.Fprintf(&b, "This builds on the earlier work in #%d by @%s; "+
+				"their commits are preserved in the history.\n\n",
+				c.PRSignal.Number, c.PRSignal.Author)
+		} else {
+			fmt.Fprintf(&b, "#%d by @%s covered the same ground; this is a fresh "+
+				"branch, but the approach there informed it.\n\n",
+				c.PRSignal.Number, c.PRSignal.Author)
+		}
 		c.Credits = c.PRSignal.Author
 	}
 	fmt.Fprintf(&b, "Fixes #%d\n", c.Issue)

@@ -5,6 +5,7 @@
 # evidence: .github/workflows/go.yml:build
 # evidence: .github/workflows/go.yml
 # evidence: leg matrix.os=ubuntu-latest of [ubuntu-latest windows-latest macos-latest]
+# evidence: .github/workflows/lint.yml:lint
 FROM mcr.microsoft.com/devcontainers/go:1.26
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 CI=1
 

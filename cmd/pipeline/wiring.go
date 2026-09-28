@@ -6,11 +6,19 @@ import (
 
 	"github.com/vimalyad/osspipeline/internal/brief"
 	"github.com/vimalyad/osspipeline/internal/cilog"
+	"github.com/vimalyad/osspipeline/internal/contest"
+	"github.com/vimalyad/osspipeline/internal/discover"
+	"github.com/vimalyad/osspipeline/internal/gate"
 	"github.com/vimalyad/osspipeline/internal/ghx"
+	"github.com/vimalyad/osspipeline/internal/harvest"
+	"github.com/vimalyad/osspipeline/internal/implement"
 	"github.com/vimalyad/osspipeline/internal/llm"
+	"github.com/vimalyad/osspipeline/internal/profile"
+	"github.com/vimalyad/osspipeline/internal/propose"
 	"github.com/vimalyad/osspipeline/internal/publish"
 	"github.com/vimalyad/osspipeline/internal/recipe"
 	"github.com/vimalyad/osspipeline/internal/replies"
+	"github.com/vimalyad/osspipeline/internal/repo"
 	"github.com/vimalyad/osspipeline/internal/repofacts"
 	"github.com/vimalyad/osspipeline/internal/sandbox"
 	"github.com/vimalyad/osspipeline/internal/store"
@@ -36,6 +44,15 @@ var (
 	_ watch.Saver           = (*store.Store)(nil)
 	_ replies.Drafter       = (*llm.Client)(nil)
 	_ brief.Judge           = (*llm.Client)(nil)
+	_ implement.Agent       = (*llm.Client)(nil)
+	_ implement.Judge       = (*llm.Client)(nil)
+	_ implement.Git         = (*repo.Manager)(nil)
+	_ implement.Runner      = (*sandbox.Session)(nil)
+	_ discover.API          = (*ghx.Client)(nil)
+	_ contest.API           = (*ghx.Client)(nil)
+	_ harvest.API           = (*ghx.Client)(nil)
+	_ propose.Domains       = (*profile.Profile)(nil)
+	_ gate.Store            = (*store.Store)(nil)
 	_ publish.API           = (*ghx.Client)(nil)
 	_ cilog.API             = cilogAPI{}
 	_ repofacts.API         = plainGet{}

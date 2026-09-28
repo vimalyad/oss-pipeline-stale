@@ -49,8 +49,10 @@ type Client struct {
 	Env     []string
 	Timeout time.Duration
 	Log     func(string)
-	// exec is swappable for tests.
-	exec func(ctx context.Context, args []string, stdin string, env []string) (string, string, error)
+	// exec is swappable for tests. dir is the working directory, empty for
+	// every call but Patch -- a judgement runs nowhere in particular, while
+	// writing a patch happens inside the clone.
+	exec func(ctx context.Context, dir string, args []string, stdin string, env []string) (string, string, error)
 }
 
 func New(env []string) *Client {
@@ -63,9 +65,10 @@ func (c *Client) logf(f string, a ...any) {
 	}
 }
 
-func runClaude(ctx context.Context, args []string, stdin string, env []string) (string, string, error) {
+func runClaude(ctx context.Context, dir string, args []string, stdin string, env []string) (string, string, error) {
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Env = env
+	cmd.Dir = dir
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
@@ -93,7 +96,7 @@ func (c *Client) Judge(ctx context.Context, prompt string) (string, error) {
 		"--model", ModelJudge,
 		"--disallowed-tools", "Read", "Write", "Edit", "Bash", "WebFetch", "WebSearch",
 	}
-	out, errOut, err := c.exec(ctx, args, "", c.Env)
+	out, errOut, err := c.exec(ctx, "", args, "", c.Env)
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", fmt.Errorf("%w: timed out after %s", ErrLLM, timeout)
@@ -222,12 +225,51 @@ func (c *Client) JudgeWith(ctx context.Context, prompt, system, stdin string) (s
 	if system != "" {
 		args = append(args, "--append-system-prompt", system)
 	}
-	out, errOut, err := c.exec(ctx, args, stdin, c.Env)
+	out, errOut, err := c.exec(ctx, "", args, stdin, c.Env)
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", fmt.Errorf("%w: timed out after %s", ErrLLM, timeout)
 		}
 		return "", fmt.Errorf("%w: %v: %s", ErrLLM, err, text.Ellipsis(errOut, 300))
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// PatchTimeout is generous: writing a patch means reading a codebase first.
+const PatchTimeout = 60 * time.Minute
+
+// Patch runs the coding agent inside a clone, with execution disabled.
+//
+// This is the one call that writes files, and the tool list is the security
+// boundary of the whole v2 design. The agent may Read, Write and Edit inside
+// the bind-mounted clone and nothing else: no Bash, so it cannot run the
+// repository's build, its tests, or anything a malicious postinstall left
+// behind. Every command the patch needs is run afterwards by the pipeline,
+// inside a container, which is what makes "no target-repo code executes on the
+// host" a property of the process rather than a rule the agent is asked to
+// respect.
+//
+// It also means the audit trail is complete: each command run against a target
+// repository is a decision of ours that was logged, not something an agent
+// chose mid-turn.
+func (c *Client) Patch(ctx context.Context, clone, prompt string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, PatchTimeout)
+	defer cancel()
+
+	args := []string{
+		"-p", prompt,
+		"--model", ModelCode,
+		"--permission-mode", "acceptEdits",
+		"--add-dir", clone,
+		// Bash is absent on purpose. See above.
+		"--disallowed-tools", "Bash", "WebFetch", "WebSearch", "Task",
+	}
+	out, errOut, err := c.exec(ctx, clone, args, "", c.Env)
+	if err != nil {
+		if ctx.Err() != nil {
+			return out, fmt.Errorf("%w: patch timed out after %s", ErrLLM, PatchTimeout)
+		}
+		return out, fmt.Errorf("%w: %v: %s", ErrLLM, err, text.Ellipsis(errOut, 300))
 	}
 	return strings.TrimSpace(out), nil
 }

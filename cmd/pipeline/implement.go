@@ -218,6 +218,25 @@ func implementCmd(root string, args []string) int {
 		fmt.Printf("BLOCKED: %s\n", b)
 	}
 
+	// Does the added test actually exercise the bug? "The tests pass" proves
+	// nothing on its own: a test that passes with or without the source change
+	// looks like verification and is worth nothing.
+	patchFile := filepath.Join(root, "state", "context", c.Slug()+".patch")
+	_ = os.MkdirAll(filepath.Dir(patchFile), 0o755)
+	ff, ferr := implement.ConfirmTestFailsFirst(ctx, rm, rm, sess, clone, patchFile, cmdsOf(res))
+	switch {
+	case ferr != nil:
+		fmt.Fprintln(os.Stderr, "fails-first check:", ferr)
+		return 1
+	case !ff.Checked:
+		say("fails-first: not checked -- " + ff.Why)
+	case ff.FailedWithoutTheFix:
+		say("fails-first: confirmed -- " + ff.Why)
+	default:
+		fmt.Printf("BLOCKED: %s\n", ff.Why)
+		res.Blocked = append(res.Blocked, ff.Why)
+	}
+
 	// --- the last gate --------------------------------------------------
 	problems, err := submit.Preflight(ctx, rm, clone, submit.Identity{
 		Name: id.Name, Email: id.Email, Login: id.Login, Private: id.PrivateStrings(),
@@ -260,3 +279,15 @@ func (n netRunner) Run(ctx context.Context, cmd string) (sandbox.Result, error) 
 }
 
 func say(s string) { fmt.Println("  " + s) }
+
+// cmdsOf is the test commands a run actually executed, for re-running them
+// against the reverted source.
+func cmdsOf(r implement.Result) []string {
+	var out []string
+	for _, t := range r.Tests {
+		if t.Outcome != repro.Environment {
+			out = append(out, t.Command)
+		}
+	}
+	return out
+}

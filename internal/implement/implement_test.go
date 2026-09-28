@@ -366,3 +366,155 @@ func TestTheAgentRunsInTheClone(t *testing.T) {
 		t.Errorf("agent ran in %q, want %q", a.clone, clone)
 	}
 }
+
+type fakeReverter struct {
+	ran      [][]string
+	applyErr error
+}
+
+func (f *fakeReverter) Git(_ context.Context, _ string, args ...string) (string, error) {
+	f.ran = append(f.ran, args)
+	if len(args) > 0 && args[0] == "apply" && f.applyErr != nil {
+		return "", f.applyErr
+	}
+	return "", nil
+}
+
+// TestATestThatPassesEitherWayIsCaught is the point of the whole check. A patch
+// can add a test that passes with or without the source change: it looks like
+// verification, reads like verification in a pull request body, and proves
+// nothing.
+func TestATestThatPassesEitherWayIsCaught(t *testing.T) {
+	g := &fakeGit{
+		diff:    "diff --git a/x b/x\n+1",
+		pending: "M\tinternal/sympath/walk.go\nM\tpkg/loader/load_test.go",
+	}
+	r := &fakeReverter{}
+	// The test still passes with the source reverted.
+	offline := &fakeRunner{replies: map[string]sandbox.Result{"go test": {Code: 0}}}
+
+	got, err := ConfirmTestFailsFirst(context.Background(), g, r, offline,
+		t.TempDir(), filepath.Join(t.TempDir(), "p.diff"), []string{"go test ./..."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Checked {
+		t.Fatal("the check did not run")
+	}
+	if got.FailedWithoutTheFix {
+		t.Fatal("a test that passes without the fix was reported as exercising the bug")
+	}
+	if !strings.Contains(got.Why, "does not exercise the bug") {
+		t.Errorf("why = %q", got.Why)
+	}
+}
+
+func TestATestThatFailsFirstIsConfirmed(t *testing.T) {
+	g := &fakeGit{
+		diff:    "diff --git a/x b/x\n+1",
+		pending: "M\tinternal/sympath/walk.go\nM\tpkg/loader/load_test.go",
+	}
+	r := &fakeReverter{}
+	offline := &fakeRunner{replies: map[string]sandbox.Result{
+		"go test": {Code: 1, Output: "--- FAIL: TestLoadDirWithBrokenSymlink"}}}
+
+	got, err := ConfirmTestFailsFirst(context.Background(), g, r, offline,
+		t.TempDir(), filepath.Join(t.TempDir(), "p.diff"), []string{"go test ./..."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.FailedWithoutTheFix {
+		t.Fatalf("got = %+v", got)
+	}
+	if !strings.Contains(got.Why, "fails without the fix") {
+		t.Errorf("why = %q", got.Why)
+	}
+}
+
+// TestOnlySourceIsReverted: reverting the test files too would leave nothing to
+// run and the check would always "pass".
+func TestOnlySourceIsReverted(t *testing.T) {
+	g := &fakeGit{
+		diff:    "d",
+		pending: "M\tinternal/sympath/walk.go\nM\tpkg/loader/load_test.go\nM\tREADME.md",
+	}
+	r := &fakeReverter{}
+	if _, err := ConfirmTestFailsFirst(context.Background(), g, r, &fakeRunner{},
+		t.TempDir(), filepath.Join(t.TempDir(), "p.diff"), []string{"go test"}); err != nil {
+		t.Fatal(err)
+	}
+	var reverted []string
+	for _, args := range r.ran {
+		if len(args) > 1 && args[0] == "checkout" {
+			reverted = args[2:]
+		}
+	}
+	for _, p := range reverted {
+		if strings.Contains(p, "_test.go") {
+			t.Errorf("reverted a test file: %s", p)
+		}
+	}
+	if len(reverted) != 2 {
+		t.Errorf("reverted %v, want the two non-test files", reverted)
+	}
+}
+
+// TestTheWorkIsAlwaysRestored, and a failure to restore is loud. Submitting a
+// patch with its source half missing would be worse than any verification.
+func TestTheWorkIsAlwaysRestored(t *testing.T) {
+	dir := t.TempDir()
+	patch := filepath.Join(dir, "p.diff")
+	g := &fakeGit{diff: "diff --git a/x b/x\n+1",
+		pending: "M\tsrc.go\nM\tsrc_test.go"}
+	r := &fakeReverter{}
+
+	if _, err := ConfirmTestFailsFirst(context.Background(), g, r, &fakeRunner{},
+		dir, patch, []string{"go test"}); err != nil {
+		t.Fatal(err)
+	}
+	var applied bool
+	for _, args := range r.ran {
+		if len(args) > 0 && args[0] == "apply" {
+			applied = true
+		}
+	}
+	if !applied {
+		t.Fatal("the patch was never reapplied")
+	}
+	// And it is on disk before anything is touched, so a crash is recoverable.
+	if b, err := os.ReadFile(patch); err != nil || !strings.Contains(string(b), "diff --git") {
+		t.Fatalf("the patch was not saved: %v", err)
+	}
+
+	r2 := &fakeReverter{applyErr: errors.New("patch does not apply")}
+	_, err := ConfirmTestFailsFirst(context.Background(), g, r2, &fakeRunner{},
+		dir, patch, []string{"go test"})
+	if err == nil {
+		t.Fatal("a failed restore was swallowed")
+	}
+	if !strings.Contains(err.Error(), patch) {
+		t.Errorf("err = %v; it must say where the work is saved", err)
+	}
+}
+
+func TestNothingToHoldConstant(t *testing.T) {
+	for _, tt := range []struct{ name, pending string }{
+		{"tests only", "M\tsrc_test.go"},
+		{"source only", "M\tsrc.go"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			g := &fakeGit{diff: "d", pending: tt.pending}
+			got, err := ConfirmTestFailsFirst(context.Background(), g, &fakeReverter{},
+				&fakeRunner{}, t.TempDir(), filepath.Join(t.TempDir(), "p.diff"), []string{"go test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Checked {
+				t.Error("claimed to have checked something it could not")
+			}
+			if got.Why == "" {
+				t.Error("no reason given for not checking")
+			}
+		})
+	}
+}

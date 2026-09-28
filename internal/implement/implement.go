@@ -24,6 +24,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/vimalyad/osspipeline/internal/llm"
@@ -309,6 +310,122 @@ func changedFiles(ctx context.Context, g Git, clone string) []string {
 			// `git diff --name-status` puts the status first; a rename puts
 			// the destination last, which is the file that now exists.
 			p := fields[len(fields)-1]
+			if !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+// FailsFirst is the answer to "does the added test actually exercise the bug?"
+type FailsFirst struct {
+	// Checked is false when there was nothing to check -- a patch that
+	// changed no source, or none that changed a test.
+	Checked bool
+	// FailedWithoutTheFix is the property being asserted.
+	FailedWithoutTheFix bool
+	Why                 string
+	Output              string
+}
+
+// Reverter puts the working tree back. Separate from Git because reverting is
+// the one operation here that can lose work, and a caller should have to pass
+// it deliberately.
+type Reverter interface {
+	Git(ctx context.Context, dir string, args ...string) (string, error)
+}
+
+// ConfirmTestFailsFirst checks that the test the patch added exercises the bug.
+//
+// "The tests pass" proves nothing on its own. A patch can add a test that
+// passes with or without the source change: it looks like verification, reads
+// like verification in a pull request body, and is worth nothing. The property
+// a maintainer would check by hand is that the new test fails on unmodified
+// code and passes with the change.
+//
+// It reverts only the non-test files, re-runs, and restores. The patch is
+// written to disk first and reapplied from there, so a failure at any step
+// leaves the work recoverable rather than lost -- and a restore that does not
+// take is reported as an error rather than swallowed, because the alternative
+// is silently submitting a patch with its source half missing.
+func ConfirmTestFailsFirst(ctx context.Context, g Git, r Reverter, offline Runner,
+	clone, patchFile string, cmds []string) (FailsFirst, error) {
+
+	committed, pending := g.NameStatus(ctx, clone)
+	var source, tests []string
+	for _, p := range splitPaths(committed, pending) {
+		if toolchain.IsTestFile(p) {
+			tests = append(tests, p)
+		} else {
+			source = append(source, p)
+		}
+	}
+	if len(source) == 0 || len(tests) == 0 {
+		return FailsFirst{Why: "the patch changed only source or only tests, so there is " +
+			"nothing to hold constant"}, nil
+	}
+	if len(cmds) == 0 {
+		return FailsFirst{Why: "no test command to run"}, nil
+	}
+
+	// The whole diff goes to disk before anything is touched.
+	full := g.Diff(ctx, clone)
+	if strings.TrimSpace(full) == "" {
+		return FailsFirst{Why: "no diff to hold"}, nil
+	}
+	if err := os.WriteFile(patchFile, []byte(full), 0o600); err != nil {
+		return FailsFirst{}, fmt.Errorf("%w: saving the patch: %v", ErrImplement, err)
+	}
+
+	revert := append([]string{"checkout", "--"}, source...)
+	if _, err := r.Git(ctx, clone, revert...); err != nil {
+		return FailsFirst{}, fmt.Errorf("%w: reverting source: %v", ErrImplement, err)
+	}
+
+	out := FailsFirst{Checked: true}
+	for _, cmd := range cmds {
+		res, err := offline.Run(ctx, cmd)
+		if err != nil {
+			out.Why = "could not run the test without the fix: " + err.Error()
+			break
+		}
+		out.Output = text.Clip(res.Output, 4000)
+		if !res.OK() {
+			out.FailedWithoutTheFix = true
+			out.Why = fmt.Sprintf("%s fails without the fix (exit %d)", text.FirstLine(cmd, 60), res.Code)
+			break
+		}
+	}
+	if !out.FailedWithoutTheFix && out.Why == "" {
+		out.Why = "the added test passes without the source change, so it does not exercise the bug"
+	}
+
+	// Restoration is mandatory. Losing the source half of a patch and
+	// submitting the tests alone would be worse than any verification.
+	if _, err := r.Git(ctx, clone, "apply", patchFile); err != nil {
+		return out, fmt.Errorf("%w: the patch could not be restored after the check; "+
+			"it is saved at %s: %v", ErrImplement, patchFile, err)
+	}
+	after := g.Diff(ctx, clone)
+	if strings.TrimSpace(after) == "" {
+		return out, fmt.Errorf("%w: the working tree is empty after restoring; "+
+			"the patch is saved at %s", ErrImplement, patchFile)
+	}
+	return out, nil
+}
+
+func splitPaths(blocks ...string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, block := range blocks {
+		for _, line := range strings.Split(block, "\n") {
+			f := strings.Fields(line)
+			if len(f) < 2 {
+				continue
+			}
+			p := f[len(f)-1]
 			if !seen[p] {
 				seen[p] = true
 				out = append(out, p)

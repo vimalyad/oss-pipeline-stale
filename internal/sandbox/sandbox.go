@@ -228,7 +228,7 @@ func (s *Session) Run(ctx context.Context, cmd string) (Result, error) {
 	// invocation, and it is invisible in exactly the languages nobody tested
 	// with. A non-login shell inherits the container's own environment, which
 	// is the one the image author configured.
-	c := exec.CommandContext(runCtx, "docker", "exec", "-i", s.ID, "/bin/bash", "-c", cmd)
+	c := exec.CommandContext(runCtx, "docker", append(execArgs(s.ID), cmd)...)
 	var buf bytes.Buffer
 	c.Stdout, c.Stderr = &buf, &buf
 	err := c.Run()
@@ -378,4 +378,10 @@ func (s *Session) networks(ctx context.Context) ([]string, error) {
 	}
 	sort.Strings(nets)
 	return nets, nil
+}
+
+// execArgs builds the docker exec invocation, extracted so a test can read it:
+// the choice of shell flag here is a correctness property, not a detail.
+func execArgs(id string) []string {
+	return []string{"exec", "-i", id, "/bin/bash", "-c"}
 }

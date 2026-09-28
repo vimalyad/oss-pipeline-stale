@@ -423,3 +423,60 @@ func TestIntegrationDetachRemovesEgress(t *testing.T) {
 		t.Errorf("the container lost its writable layer across Detach: %v %+v", err, res)
 	}
 }
+
+// TestCommandsRunInANonLoginShell guards a one-character fix that cost a whole
+// pipeline run to find.
+//
+// `bash -lc` sources /etc/profile, which on Debian resets PATH to a system
+// default and discards everything the image set. `go` vanishes from a golang
+// image and `cargo` from a rust one; node and python survive only because they
+// install into /usr/local/bin, which the default PATH already covers. So the
+// bug is invisible in the two ecosystems most likely to be tested with, and the
+// symptom -- "go: command not found" -- classifies as an unbuildable
+// repository rather than as a broken shell invocation.
+func TestCommandsRunInANonLoginShell(t *testing.T) {
+	args := execArgs("abc123")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "/bin/bash -c") {
+		t.Fatalf("exec args = %v, want a non-login shell", args)
+	}
+	for _, bad := range []string{"-lc", "-l", "--login"} {
+		for _, a := range args {
+			if a == bad {
+				t.Fatalf("%q makes the shell discard the image's PATH", bad)
+			}
+		}
+	}
+	if args[len(args)-1] != "-c" {
+		t.Errorf("the command must follow -c directly: %v", args)
+	}
+}
+
+// TestIntegrationImageEnvironmentSurvives is the behavioural half: a language
+// installed outside /usr/local/bin has to still be on PATH.
+func TestIntegrationImageEnvironmentSurvives(t *testing.T) {
+	dockerAvailable(t)
+	if os.Getenv("OSSP_LANG_IMAGE") == "" {
+		t.Skip("set OSSP_LANG_IMAGE to an image whose language lives outside /usr/local/bin")
+	}
+	s, err := Start(context.Background(), Spec{
+		Image: os.Getenv("OSSP_LANG_IMAGE"), Clone: t.TempDir(), Limits: DefaultLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	probe := os.Getenv("OSSP_LANG_BINARY")
+	if probe == "" {
+		probe = "go"
+	}
+	res, err := s.Run(context.Background(), "command -v "+probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK() {
+		t.Fatalf("%s is not on PATH inside %s: the shell discarded the image's environment\n%s",
+			probe, os.Getenv("OSSP_LANG_IMAGE"), res.Output)
+	}
+}

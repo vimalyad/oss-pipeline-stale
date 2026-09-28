@@ -62,6 +62,8 @@ func main() {
 		code = excludeCmd(root, os.Args[2:])
 	case "cla-signed":
 		code = claSignedCmd(root, os.Args[2:])
+	case "implement":
+		code = implementCmd(root, os.Args[2:])
 	default:
 		usage()
 		code = 2
@@ -86,6 +88,9 @@ func usage() {
   ledger    write the contribution record
   exclude   <owner/repo>      take a repository off the table
   cla-signed <owner/repo>     record that its CLA is signed
+  implement <slug> [--execute]  clone, patch and verify in a container;
+                                dry run by default, which still does everything
+                                except commit, push and open the pull request
 `)
 }
 

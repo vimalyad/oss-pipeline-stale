@@ -352,3 +352,25 @@ func IsIdentityError(err error) bool {
 	var e *Error
 	return errors.As(err, &e)
 }
+
+// PrivateStrings are the literals that must never reach a public diff or pull
+// request body: the user's other accounts and addresses.
+//
+// Returned from the loaded identity rather than written into the scanner,
+// because the scanner lives in a repository that is public. Hardcoding the
+// address the check exists to suppress would publish it the moment anyone read
+// the source.
+func (i Identity) PrivateStrings() []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, s := range append(append([]string{i.WorkEmail, i.WorkLogin},
+		i.OtherEmails...), i.OtherLogins...) {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}

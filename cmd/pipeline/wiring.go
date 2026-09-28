@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 
+	"github.com/vimalyad/osspipeline/internal/audit"
 	"github.com/vimalyad/osspipeline/internal/brief"
 	"github.com/vimalyad/osspipeline/internal/cilog"
 	"github.com/vimalyad/osspipeline/internal/contest"
@@ -57,6 +58,7 @@ var (
 	_ harvest.API           = (*ghx.Client)(nil)
 	_ propose.Domains       = (*profile.Profile)(nil)
 	_ gate.Store            = (*store.Store)(nil)
+	_ gate.Auditor          = (*audit.Log)(nil)
 	_ publish.API           = (*ghx.Client)(nil)
 	_ cilog.API             = cilogAPI{}
 	_ repofacts.API         = plainGet{}

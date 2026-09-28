@@ -50,6 +50,18 @@ func main() {
 		code = engageHalt(root)
 	case "resume":
 		code = release(root)
+	case "ledger":
+		code = ledgerCmd(root)
+	case "propose":
+		code = proposeCmd(root)
+	case "approve":
+		code = approveCmd(root, os.Args[2:])
+	case "reject":
+		code = rejectCmd(root, os.Args[2:])
+	case "exclude":
+		code = excludeCmd(root, os.Args[2:])
+	case "cla-signed":
+		code = claSignedCmd(root, os.Args[2:])
 	default:
 		usage()
 		code = 2
@@ -67,6 +79,13 @@ func usage() {
   check     screen a file destined for a public comment or PR body
   halt      stop every scheduled stage (takes a reason)
   resume    lift a halt
+
+  propose   rank what is waiting and write today's report
+  approve   <slug>            accept a proposal for implementation
+  reject    <slug> <reason>   decline one, with a reason that is kept
+  ledger    write the contribution record
+  exclude   <owner/repo>      take a repository off the table
+  cla-signed <owner/repo>     record that its CLA is signed
 `)
 }
 

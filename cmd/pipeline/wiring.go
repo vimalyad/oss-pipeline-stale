@@ -22,6 +22,7 @@ import (
 	"github.com/vimalyad/osspipeline/internal/repofacts"
 	"github.com/vimalyad/osspipeline/internal/sandbox"
 	"github.com/vimalyad/osspipeline/internal/store"
+	"github.com/vimalyad/osspipeline/internal/submit"
 	"github.com/vimalyad/osspipeline/internal/toolchain"
 	"github.com/vimalyad/osspipeline/internal/watch"
 )
@@ -48,6 +49,9 @@ var (
 	_ implement.Judge       = (*llm.Client)(nil)
 	_ implement.Git         = (*repo.Manager)(nil)
 	_ implement.Runner      = (*sandbox.Session)(nil)
+	_ submit.Git            = (*repo.Manager)(nil)
+	_ submit.Judge          = (*llm.Client)(nil)
+	_ submit.GH             = (*ghx.Client)(nil)
 	_ discover.API          = (*ghx.Client)(nil)
 	_ contest.API           = (*ghx.Client)(nil)
 	_ harvest.API           = (*ghx.Client)(nil)

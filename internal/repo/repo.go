@@ -298,3 +298,15 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// Git runs a git command in dir and returns stdout.
+//
+// Exported so internal/submit can do the handful of things it needs -- fetch,
+// list untracked files, commit, push -- without this package growing a method
+// per verb. The identity environment is applied here, which is the reason
+// submit must not shell out to git itself: every commit and push has to carry
+// the isolated account's name, email and credential helper, and a call that
+// bypassed this would silently use the machine's default account.
+func (m *Manager) Git(ctx context.Context, dir string, args ...string) (string, error) {
+	return m.git(ctx, dir, args...)
+}

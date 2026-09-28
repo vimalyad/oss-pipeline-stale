@@ -227,3 +227,50 @@ func TestAssertReportsEveryProblemAtOnce(t *testing.T) {
 		t.Fatalf("want all 3 problems, got %d: %v", len(e.Problems), e.Problems)
 	}
 }
+
+// TestPrivateStringsGathersEveryAccount. These are the literals the secret
+// scanner refuses to let into a public diff, and a missing one is a leak.
+func TestPrivateStrings(t *testing.T) {
+	id := Identity{
+		Login: "vimalyad", Name: "A Name", Email: "1+vimalyad@users.noreply.github.com",
+		WorkLogin: "workacct", WorkEmail: "a@employer.example",
+		OtherLogins: []string{"otheracct", "workacct"},
+		OtherEmails: []string{"b@example.com", "", "  "},
+	}
+	got := id.PrivateStrings()
+
+	want := map[string]bool{"workacct": true, "a@employer.example": true,
+		"otheracct": true, "b@example.com": true}
+	for _, s := range got {
+		if !want[s] {
+			t.Errorf("unexpected private string %q", s)
+		}
+		delete(want, s)
+	}
+	for s := range want {
+		t.Errorf("missing private string %q", s)
+	}
+	// The publishing identity itself is not private -- it is the whole point
+	// of the account, and listing it would block every commit it authors.
+	for _, s := range got {
+		if s == id.Login || s == id.Email {
+			t.Errorf("the publishing identity %q was treated as private", s)
+		}
+	}
+	// Blank entries and duplicates must not become scanner patterns: an empty
+	// string matches every diff.
+	for _, s := range got {
+		if strings.TrimSpace(s) == "" {
+			t.Error("a blank private string would match every diff")
+		}
+	}
+	if len(got) != 4 {
+		t.Errorf("got %d strings, want 4 after deduplication: %v", len(got), got)
+	}
+}
+
+func TestPrivateStringsOnAnEmptyIdentity(t *testing.T) {
+	if got := (Identity{}).PrivateStrings(); len(got) != 0 {
+		t.Fatalf("= %v, want nothing", got)
+	}
+}

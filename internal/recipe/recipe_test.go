@@ -541,3 +541,29 @@ func TestPlatformScopedStepsAreFiltered(t *testing.T) {
 		}
 	}
 }
+
+// TestAnUnresolvableGoVersionFallsBackToGoMod: helm's workflow reads
+// GOLANG_VERSION out of .github/env and interpolates it, so there is nothing to
+// evaluate -- while go.mod states the minimum three lines in. Defaulting
+// instead picked 1.25 for a module requiring 1.26.
+func TestAnUnresolvableGoVersionFallsBackToGoMod(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"),
+		[]byte("module helm.sh/helm/v4\n\ngo 1.26.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := resolveVersionFiles(dir, []Tool{{Lang: "go"}})
+	if len(got) != 1 || got[0].Version != "1.26" {
+		t.Fatalf("= %+v, want 1.26 read from go.mod", got)
+	}
+	// An explicit version from CI still wins: the project said it directly.
+	stated := resolveVersionFiles(dir, []Tool{{Lang: "go", Version: "1.24"}})
+	if stated[0].Version != "1.24" {
+		t.Errorf("= %q, want the stated version", stated[0].Version)
+	}
+	// And a language with no manifest convention is left alone rather than
+	// guessed at.
+	if got := resolveVersionFiles(dir, []Tool{{Lang: "python"}}); got[0].Version != "" {
+		t.Errorf("python version invented: %q", got[0].Version)
+	}
+}

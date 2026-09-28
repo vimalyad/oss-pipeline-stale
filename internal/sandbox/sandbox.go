@@ -219,7 +219,16 @@ func (s *Session) Run(ctx context.Context, cmd string) (Result, error) {
 	defer cancel()
 
 	started := time.Now()
-	c := exec.CommandContext(runCtx, "docker", "exec", "-i", s.ID, "/bin/bash", "-lc", cmd)
+	// -c, not -lc. A login shell sources /etc/profile, which on Debian resets
+	// PATH to a system default and discards everything the image set -- so
+	// `go` vanishes from a golang image and `cargo` from a rust one, while
+	// node and python happen to survive because they install into
+	// /usr/local/bin. The failure reads as "go: command not found", which
+	// classifies as an unbuildable repository rather than as a broken shell
+	// invocation, and it is invisible in exactly the languages nobody tested
+	// with. A non-login shell inherits the container's own environment, which
+	// is the one the image author configured.
+	c := exec.CommandContext(runCtx, "docker", "exec", "-i", s.ID, "/bin/bash", "-c", cmd)
 	var buf bytes.Buffer
 	c.Stdout, c.Stderr = &buf, &buf
 	err := c.Run()

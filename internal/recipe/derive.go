@@ -60,7 +60,7 @@ var ignoredActions = []string{
 var (
 	testCmdRe  = regexp.MustCompile(`(^|[;&|\s])(pytest|go test|cargo test|npm test|npm run test|yarn test|pnpm test|tox|nox|make test|ctest|mvn test|gradle test|bundle exec rspec|python -m pytest)\b`)
 	lintCmdRe  = regexp.MustCompile(`(^|[;&|\s])(ruff|golangci-lint|go vet|eslint|black|mypy|flake8|clippy|cargo fmt|pre-commit|gofmt|isort|shellcheck|taplo|toml-fmt)\b`)
-	instCmdRe  = regexp.MustCompile(`(^|[;&|\s])(pip install|pip3 install|uv pip|uv sync|poetry install|go mod download|go mod tidy|npm ci|npm install|yarn install|pnpm install|cargo fetch|pixi install|conda install|make deps|bundle install|python setup\.py|pip download)\b`)
+	instCmdRe  = regexp.MustCompile(`(^|[;&|\s])(pip install|pip3 install|uv pip|uv sync|poetry install|go mod download|npm ci|npm install|yarn install|pnpm install|cargo fetch|pixi install|conda install|make deps|bundle install|python setup\.py|pip download)\b`)
 	buildCmdRe = regexp.MustCompile(`(^|[;&|\s])(go build|go vet|cargo build|npm run build|yarn build|pnpm build|make build|cmake --build|mvn package|python -m build)\b`)
 	aptCmdRe   = regexp.MustCompile(`(?m)^\s*(?:sudo\s+)?apt(?:-get)?\s+install\s+(.*)$`)
 	// A step that reads a secret cannot be reproduced here and must not be
@@ -520,7 +520,19 @@ func maskVolumes(tools []Tool, lang string) []string {
 func resolveVersionFiles(root string, tools []Tool) []Tool {
 	for i := range tools {
 		t := &tools[i]
-		if t.Version != "" || t.VersionFile == "" {
+		if t.Version != "" {
+			continue
+		}
+		// A repository that states its version in a way we cannot evaluate
+		// still states its minimum in its own manifest. helm's workflow reads
+		// GOLANG_VERSION out of .github/env and interpolates it, which leaves
+		// nothing to resolve -- while go.mod says `go 1.26.0` three lines in.
+		// Falling back to a hardcoded default there picked 1.25 and would have
+		// failed the build for a reason the repository had already answered.
+		if t.VersionFile == "" && t.Lang == "go" {
+			t.VersionFile = "go.mod"
+		}
+		if t.VersionFile == "" {
 			continue
 		}
 		b, err := os.ReadFile(filepath.Join(root, t.VersionFile))

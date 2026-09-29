@@ -374,7 +374,7 @@ type fakeReverter struct {
 
 func (f *fakeReverter) Git(_ context.Context, _ string, args ...string) (string, error) {
 	f.ran = append(f.ran, args)
-	if len(args) > 0 && args[0] == "apply" && f.applyErr != nil {
+	if len(args) > 1 && args[0] == "stash" && args[1] == "pop" && f.applyErr != nil {
 		return "", f.applyErr
 	}
 	return "", nil
@@ -445,8 +445,12 @@ func TestOnlySourceIsReverted(t *testing.T) {
 	}
 	var reverted []string
 	for _, args := range r.ran {
-		if len(args) > 1 && args[0] == "checkout" {
-			reverted = args[2:]
+		if len(args) > 1 && args[0] == "stash" && args[1] == "push" {
+			for i, a := range args {
+				if a == "--" {
+					reverted = args[i+1:]
+				}
+			}
 		}
 	}
 	for _, p := range reverted {
@@ -472,28 +476,30 @@ func TestTheWorkIsAlwaysRestored(t *testing.T) {
 		dir, patch, []string{"go test"}); err != nil {
 		t.Fatal(err)
 	}
-	var applied bool
+	var popped bool
 	for _, args := range r.ran {
-		if len(args) > 0 && args[0] == "apply" {
-			applied = true
+		if len(args) > 1 && args[0] == "stash" && args[1] == "pop" {
+			popped = true
 		}
 	}
-	if !applied {
-		t.Fatal("the patch was never reapplied")
+	if !popped {
+		t.Fatal("the source change was never restored")
 	}
 	// And it is on disk before anything is touched, so a crash is recoverable.
 	if b, err := os.ReadFile(patch); err != nil || !strings.Contains(string(b), "diff --git") {
 		t.Fatalf("the patch was not saved: %v", err)
 	}
 
-	r2 := &fakeReverter{applyErr: errors.New("patch does not apply")}
+	r2 := &fakeReverter{applyErr: errors.New("could not restore")}
 	_, err := ConfirmTestFailsFirst(context.Background(), g, r2, &fakeRunner{},
 		dir, patch, []string{"go test"})
 	if err == nil {
 		t.Fatal("a failed restore was swallowed")
 	}
-	if !strings.Contains(err.Error(), patch) {
-		t.Errorf("err = %v; it must say where the work is saved", err)
+	for _, want := range []string{patch, "git stash list"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v; it must mention %q so the work can be found", err, want)
+		}
 	}
 }
 

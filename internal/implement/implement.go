@@ -340,16 +340,18 @@ type Reverter interface {
 // ConfirmTestFailsFirst checks that the test the patch added exercises the bug.
 //
 // "The tests pass" proves nothing on its own. A patch can add a test that
-// passes with or without the source change: it looks like verification, reads
-// like verification in a pull request body, and is worth nothing. The property
-// a maintainer would check by hand is that the new test fails on unmodified
-// code and passes with the change.
+// passes with or without the source change: it looks like verification, it
+// reads like verification in a pull request body, and it is worth nothing. The
+// property a maintainer would check by hand is that the new test fails on
+// unmodified code and passes with the change.
 //
-// It reverts only the non-test files, re-runs, and restores. The patch is
-// written to disk first and reapplied from there, so a failure at any step
-// leaves the work recoverable rather than lost -- and a restore that does not
-// take is reported as an error rather than swallowed, because the alternative
-// is silently submitting a patch with its source half missing.
+// It holds the test files constant, removes the source change, re-runs, and
+// puts the source back. The removal is `git stash push` on the non-test paths
+// rather than a saved patch reapplied with `git apply`: the first version did
+// the latter and lost a real patch to "corrupt patch at line 102", because the
+// diff it saved had been through a TrimSpace and a unified diff has to end
+// with a newline. Stash round-trips exactly and needs no parsing. The diff is
+// still written to disk first, as a backup that costs nothing.
 func ConfirmTestFailsFirst(ctx context.Context, g Git, r Reverter, offline Runner,
 	clone, patchFile string, cmds []string) (FailsFirst, error) {
 
@@ -370,18 +372,15 @@ func ConfirmTestFailsFirst(ctx context.Context, g Git, r Reverter, offline Runne
 		return FailsFirst{Why: "no test command to run"}, nil
 	}
 
-	// The whole diff goes to disk before anything is touched.
-	full := g.Diff(ctx, clone)
-	if strings.TrimSpace(full) == "" {
-		return FailsFirst{Why: "no diff to hold"}, nil
-	}
-	if err := os.WriteFile(patchFile, []byte(full), 0o600); err != nil {
-		return FailsFirst{}, fmt.Errorf("%w: saving the patch: %v", ErrImplement, err)
+	// A backup before anything moves. It is never read back on the happy
+	// path; it exists so an interrupted run leaves the work somewhere.
+	if full := g.Diff(ctx, clone); strings.TrimSpace(full) != "" {
+		_ = os.WriteFile(patchFile, []byte(strings.TrimRight(full, "\n")+"\n"), 0o600)
 	}
 
-	revert := append([]string{"checkout", "--"}, source...)
-	if _, err := r.Git(ctx, clone, revert...); err != nil {
-		return FailsFirst{}, fmt.Errorf("%w: reverting source: %v", ErrImplement, err)
+	stash := append([]string{"stash", "push", "--quiet", "--"}, source...)
+	if _, err := r.Git(ctx, clone, stash...); err != nil {
+		return FailsFirst{}, fmt.Errorf("%w: setting the source aside: %v", ErrImplement, err)
 	}
 
 	out := FailsFirst{Checked: true}
@@ -402,16 +401,13 @@ func ConfirmTestFailsFirst(ctx context.Context, g Git, r Reverter, offline Runne
 		out.Why = "the added test passes without the source change, so it does not exercise the bug"
 	}
 
-	// Restoration is mandatory. Losing the source half of a patch and
-	// submitting the tests alone would be worse than any verification.
-	if _, err := r.Git(ctx, clone, "apply", patchFile); err != nil {
-		return out, fmt.Errorf("%w: the patch could not be restored after the check; "+
-			"it is saved at %s: %v", ErrImplement, patchFile, err)
-	}
-	after := g.Diff(ctx, clone)
-	if strings.TrimSpace(after) == "" {
-		return out, fmt.Errorf("%w: the working tree is empty after restoring; "+
-			"the patch is saved at %s", ErrImplement, patchFile)
+	// Restoration is mandatory. Submitting a patch with its source half
+	// missing would be worse than never checking, so a failure here names both
+	// the stash and the backup rather than being swallowed.
+	if _, err := r.Git(ctx, clone, "stash", "pop"); err != nil {
+		return out, fmt.Errorf("%w: the source change could not be restored: %v; "+
+			"it is in `git stash list` in %s, and a copy is at %s",
+			ErrImplement, err, clone, patchFile)
 	}
 	return out, nil
 }

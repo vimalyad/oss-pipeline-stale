@@ -68,6 +68,8 @@ func main() {
 		code = watchCmd(root, os.Args[2:])
 	case "report":
 		code = reportCmd(root, os.Args[2:])
+	case "discover":
+		code = discoverCmd(root, os.Args[2:])
 	default:
 		usage()
 		code = 2
@@ -86,6 +88,7 @@ func usage() {
   halt      stop every scheduled stage (takes a reason)
   resume    lift a halt
 
+  discover  [--execute]       sweep the watchlist for new candidate issues
   propose   rank what is waiting and write today's report
   approve   <slug>            accept a proposal for implementation
   reject    <slug> <reason>   decline one, with a reason that is kept

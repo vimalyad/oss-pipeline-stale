@@ -274,3 +274,37 @@ func TestPrivateStringsOnAnEmptyIdentity(t *testing.T) {
 		t.Fatalf("= %v, want nothing", got)
 	}
 }
+
+// TestAssertCloneRejectsAForkRemoteOnAnotherAccount is the check that stands
+// between a verified patch and a push landing under the user's real name. The
+// three other layers all guard the commit; nothing before this guarded where
+// the commit goes.
+func TestAssertCloneRejectsAForkRemoteOnAnotherAccount(t *testing.T) {
+	clone, id := initRepo(t), testIdentity(t)
+	if err := HardenClone(clone, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := AssertClone(clone, id); err != nil {
+		t.Fatalf("a clone with no fork remote should pass: %v", err)
+	}
+
+	for _, url := range []string{
+		"https://github.com/someone-else/helm.git",
+		"git@github.com:someone-else/helm.git",
+	} {
+		run(t, clone, "remote", "add", "fork", url)
+		err := AssertClone(clone, id)
+		if err == nil {
+			t.Fatalf("%s was accepted", url)
+		}
+		if !strings.Contains(err.Error(), "not a "+id.Login+" repository") {
+			t.Fatalf("unhelpful message for %s: %v", url, err)
+		}
+		run(t, clone, "remote", "remove", "fork")
+	}
+
+	run(t, clone, "remote", "add", "fork", "https://github.com/"+id.Login+"/helm.git")
+	if err := AssertClone(clone, id); err != nil {
+		t.Fatalf("our own fork was rejected: %v", err)
+	}
+}

@@ -385,16 +385,12 @@ func TestDisclosureOnlyWhenTheProjectAsks(t *testing.T) {
 // chance for it to have changed, and this is the last moment a leak is private.
 func TestOpenRechecksTheBody(t *testing.T) {
 	gh := &fakeGH{out: "https://github.com/kornia/kornia/pull/4455"}
-	g := &fakeGit{}
 	p := Plan{Title: "t", Body: "Prepared by Claude.", Branch: "b", Base: "main", Head: "login:b"}
-	if _, err := Open(context.Background(), g, gh, candidate(), "/clone", p); !errors.Is(err, ErrSubmit) {
+	if _, err := Open(context.Background(), gh, candidate(), p); !errors.Is(err, ErrSubmit) {
 		t.Fatalf("err = %v", err)
 	}
 	if gh.args != nil {
 		t.Fatal("a leaky body reached gh pr create")
-	}
-	if g.didRun("push") {
-		t.Fatal("pushed despite refusing to open the pull request")
 	}
 }
 
@@ -404,7 +400,7 @@ func TestOpenRecordsTheURLAndNumber(t *testing.T) {
 	p := Plan{Title: "docs: x", Body: "A description.\n\nFixes #4201\n",
 		Branch: "fix/issue-4201", Base: "main", Head: "login:fix/issue-4201"}
 
-	url, err := Open(context.Background(), &fakeGit{}, gh, c, "/clone", p)
+	url, err := Open(context.Background(), gh, c, p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,26 +416,45 @@ func TestOpenRecordsTheURLAndNumber(t *testing.T) {
 	}
 }
 
-func TestOpenRefusesWithoutABranch(t *testing.T) {
-	gh := &fakeGH{}
+func TestPushRefusesWithoutABranch(t *testing.T) {
+	g := &fakeGit{}
 	p := Plan{Title: "t", Body: "clean text", Base: "main"}
-	if _, err := Open(context.Background(), &fakeGit{}, gh, candidate(), "/clone", p); !errors.Is(err, ErrSubmit) {
+	if err := Push(context.Background(), g, "/clone", p); !errors.Is(err, ErrSubmit) {
 		t.Fatalf("err = %v", err)
 	}
-	if gh.args != nil {
-		t.Fatal("opened a pull request with no branch")
+	if g.didRun("push") {
+		t.Fatal("pushed with no branch name")
 	}
 }
 
-func TestAFailedPushDoesNotOpenAPullRequest(t *testing.T) {
-	gh := &fakeGH{}
+func TestPushSetsUpstreamOnTheFork(t *testing.T) {
+	g := &fakeGit{}
+	p := Plan{Title: "t", Body: "clean text", Branch: "fix/issue-1", Base: "main"}
+	if err := Push(context.Background(), g, "/clone", p); err != nil {
+		t.Fatal(err)
+	}
+	// Never origin. origin is the upstream project, which we cannot write to
+	// and must never try to.
+	var pushed []string
+	for _, a := range g.ran {
+		if len(a) > 0 && a[0] == "push" {
+			pushed = a
+		}
+	}
+	want := []string{"push", "--set-upstream", "fork", "fix/issue-1"}
+	if strings.Join(pushed, " ") != strings.Join(want, " ") {
+		t.Fatalf("push args = %v, want %v", pushed, want)
+	}
+}
+
+func TestAFailedPushIsReported(t *testing.T) {
+	// The caller stops here and never reaches Open, which is why Push is a
+	// separate call: a push that failed must not become a "pushed" status.
 	g := &fakeGit{errs: map[string]error{"push": errors.New("rejected: non-fast-forward")}}
 	p := Plan{Title: "t", Body: "clean text", Branch: "b", Base: "main", Head: "login:b"}
-	if _, err := Open(context.Background(), g, gh, candidate(), "/clone", p); !errors.Is(err, ErrSubmit) {
+	err := Push(context.Background(), g, "/clone", p)
+	if !errors.Is(err, ErrSubmit) || !strings.Contains(err.Error(), "non-fast-forward") {
 		t.Fatalf("err = %v", err)
-	}
-	if gh.args != nil {
-		t.Fatal("opened a pull request for a branch that was never pushed")
 	}
 }
 
@@ -522,8 +537,13 @@ func TestOnlySubmitPublishes(t *testing.T) {
 				}
 				joined := strings.Join(literals, " ")
 				// A bare "push" argument to any call, or the gh pr-create pair.
+				//
+				// Recording that a push happened is not performing one, and
+				// the audit log is required to name the act it is recording.
+				// The exemption is by callee, not by string, so writing the
+				// word "push" anywhere else is still caught.
 				for _, l := range literals {
-					if l == "push" {
+					if l == "push" && !isRecordCall(call) {
 						offenders[slash] = append(offenders[slash],
 							fmt.Sprintf("line %d: pushes a branch", fset.Position(call.Pos()).Line))
 					}
@@ -637,4 +657,11 @@ func TestCreditDoesNotClaimCommitsWeNeverTook(t *testing.T) {
 	if !strings.Contains(took, "preserved in the history") {
 		t.Errorf("a real takeover does not say so:\n%s", took)
 	}
+}
+
+// isRecordCall reports whether a call is <something>.Record(...), the audit
+// log's only method.
+func isRecordCall(call *ast.CallExpr) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	return ok && sel.Sel.Name == "Record"
 }

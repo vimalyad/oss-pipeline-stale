@@ -131,6 +131,27 @@ pipeline made itself, and a human rejection is never reconsidered.`)
 	return 0
 }
 
+// retryCmd puts an abandoned candidate back in the queue, which is the way
+// back from every failure that can happen after approval.
+func retryCmd(root string, args []string) int {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, `usage: pipeline retry <slug> <reason>
+
+A reason is required. This is a sanctioned bypass of the state machine, and the
+history entry records who did it and why so that every other edge can go on
+being checked strictly.`)
+		return 2
+	}
+	msg, err := gate.Retry(store.New(root), audit.New(root), args[0], "human",
+		strings.Join(args[1:], " "))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	fmt.Println(msg)
+	return 0
+}
+
 func excludeCmd(root string, args []string) int {
 	if len(args) != 1 || !strings.Contains(args[0], "/") {
 		fmt.Fprintln(os.Stderr, "usage: pipeline exclude <owner/repo>")

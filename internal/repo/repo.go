@@ -310,3 +310,13 @@ func min(a, b int) int {
 func (m *Manager) Git(ctx context.Context, dir string, args ...string) (string, error) {
 	return m.git(ctx, dir, args...)
 }
+
+// AssertIdentity re-checks that this clone is still configured to act as the
+// OSS account. A method rather than a call to identity.AssertClone at the use
+// site, because the manager is what owns the clone and knows which identity it
+// was hardened for -- and because it lets the publishing sequence be tested
+// without a real hardened checkout, while still being a required part of the
+// interface rather than an optional hook that can be left nil.
+func (m *Manager) AssertIdentity(clone string) error {
+	return identity.AssertClone(clone, m.ID)
+}

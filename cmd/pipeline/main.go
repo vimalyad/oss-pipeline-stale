@@ -58,6 +58,8 @@ func main() {
 		code = approveCmd(root, os.Args[2:])
 	case "reject":
 		code = rejectCmd(root, os.Args[2:])
+	case "retry":
+		code = retryCmd(root, os.Args[2:])
 	case "exclude":
 		code = excludeCmd(root, os.Args[2:])
 	case "cla-signed":
@@ -92,6 +94,7 @@ func usage() {
   propose   rank what is waiting and write today's report
   approve   <slug>            accept a proposal for implementation
   reject    <slug> <reason>   decline one, with a reason that is kept
+  retry     <slug> <reason>   put abandoned work back in the approved queue
   ledger    write the contribution record
   exclude   <owner/repo>      take a repository off the table
   cla-signed <owner/repo>     record that its CLA is signed

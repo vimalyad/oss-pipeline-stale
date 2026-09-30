@@ -341,6 +341,19 @@ func AssertClone(clone string, id Identity) error {
 				"(did a package manager rewrite it?)", hooks, id.HooksPath()))
 	}
 
+	// The `fork` remote is the only one this pipeline ever pushes to, so it is
+	// the only one whose URL can put a branch on the wrong account. A clone
+	// reused from an earlier run, or one whose remote was rewritten by a
+	// script in the repository, is caught here rather than by a maintainer
+	// seeing a push from a name they can link to the user.
+	if url, err := git(clone, "remote", "get-url", "--push", "fork"); err == nil {
+		if !ownedBy(url, id.Login) {
+			problems = append(problems, fmt.Sprintf(
+				"remote \"fork\" pushes to %q, which is not a %s repository",
+				url, id.Login))
+		}
+	}
+
 	if len(problems) > 0 {
 		return &Error{Problems: problems}
 	}
@@ -373,4 +386,11 @@ func (i Identity) PrivateStrings() []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// ownedBy reports whether a git remote URL names a repository under login.
+// Both forms GitHub hands out are accepted: https://github.com/login/name and
+// git@github.com:login/name.
+func ownedBy(url, login string) bool {
+	return strings.Contains(url, "/"+login+"/") || strings.Contains(url, ":"+login+"/")
 }

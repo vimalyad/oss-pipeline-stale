@@ -87,6 +87,43 @@ func Reject(s Store, a Auditor, slug, reason string) (string, error) {
 	return fmt.Sprintf("rejected %s: %s", slug, reason), nil
 }
 
+// Retry puts an abandoned candidate back in the approved queue.
+//
+// Abandoned is terminal in the transition table, so this goes through
+// model.Reopen: the history entry is marked forced and carries who did it,
+// which is what lets `doctor` check every other edge strictly. v1 had three
+// of these written into the JSON by hand with invented timestamps, and there
+// was no way to tell them from edges the state machine had actually allowed.
+//
+// It exists because every failure after the human gate -- a fork that never
+// appeared, a rejected push, a commit the guard refused -- lands on Abandoned,
+// and without this the candidate is dead and the approval has to be made
+// again from scratch.
+func Retry(s Store, a Auditor, slug, actor, reason string) (string, error) {
+	if strings.TrimSpace(reason) == "" {
+		return "", fmt.Errorf("%w: a retry needs a reason", ErrGate)
+	}
+	c, err := s.Load(slug)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrGate, err)
+	}
+	if c.Status != model.StatusAbandoned {
+		return "", fmt.Errorf("%w: %s is %q; only abandoned work can be retried",
+			ErrGate, slug, c.Status)
+	}
+	if err := model.Reopen(c, model.StatusApproved, actor, reason); err != nil {
+		return "", err
+	}
+	// The blockers that stopped the last attempt are what the retry is for.
+	// Leaving them set would have the next run refuse before it starts.
+	c.Blockers = nil
+	if _, err := s.Save(c); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrGate, err)
+	}
+	record(a, "retry", slug, reason)
+	return fmt.Sprintf("%s is approved again: %s", slug, reason), nil
+}
+
 // Exclusions is the hand-edited list of repositories the pipeline must leave
 // alone, and the ones whose CLA has been signed.
 type Exclusions struct {

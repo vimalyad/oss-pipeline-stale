@@ -372,21 +372,34 @@ func Prepare(ctx context.Context, j Judge, g Git, c *model.Candidate, dir, verif
 	}
 }
 
-// Open pushes the branch and opens the pull request.
+// Push sends the branch to the fork.
+//
+// Separate from Open so that the status written afterwards is the truth. A
+// caller that records "pushed" around a single call which both pushes and
+// opens has to choose between recording it before the push, which lies when
+// the push fails, and recording it after the pull request exists, by which
+// point the status is already wrong in the other direction. The watcher acts
+// on that status -- it fetches fork/<branch> and refuses to touch a clone that
+// is ahead of it -- so the lie is not cosmetic.
+func Push(ctx context.Context, g Git, dir string, p Plan) error {
+	if strings.TrimSpace(p.Branch) == "" {
+		return fmt.Errorf("%w: no branch to push", ErrSubmit)
+	}
+	if _, err := g.Git(ctx, dir, "push", "--set-upstream", "fork", p.Branch); err != nil {
+		return fmt.Errorf("%w: push: %v", ErrSubmit, err)
+	}
+	return nil
+}
+
+// Open opens the pull request for a branch Push has already sent.
 //
 // The body is re-checked immediately before it is sent. Everything between
 // composing it and here is a chance for it to have changed, and this is the
 // last moment at which a leak is still private.
-func Open(ctx context.Context, g Git, gh GH, c *model.Candidate, dir string, p Plan) (string, error) {
+func Open(ctx context.Context, gh GH, c *model.Candidate, p Plan) (string, error) {
 	if bad := guard.CheckBody(p.Body); len(bad) > 0 {
 		return "", fmt.Errorf("%w: the pull request body mentions %s",
 			ErrSubmit, strings.Join(bad, ", "))
-	}
-	if strings.TrimSpace(p.Branch) == "" {
-		return "", fmt.Errorf("%w: no branch to push", ErrSubmit)
-	}
-	if _, err := g.Git(ctx, dir, "push", "--set-upstream", "fork", p.Branch); err != nil {
-		return "", fmt.Errorf("%w: push: %v", ErrSubmit, err)
 	}
 	out, err := gh.RESTRaw(ctx, []string{
 		"pr", "create", "--repo", c.Repo, "--base", p.Base, "--head", p.Head,

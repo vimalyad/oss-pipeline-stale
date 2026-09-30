@@ -73,11 +73,30 @@ func Reject(s Store, a Auditor, slug, reason string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrGate, err)
 	}
-	if c.Status == model.StatusRejected || c.Status == model.StatusAbandoned {
+	if c.Status == model.StatusAbandoned {
 		return fmt.Sprintf("%s is already %s", slug, c.Status), nil
 	}
-	c.RejectReason = "human rejection: " + reason
-	if err := model.Transition(c, model.StatusRejected, "human rejection: "+reason); err != nil {
+	// Already rejected, but by the scorer. A machine rejection expires and the
+	// candidate comes back round; a human one never does. Recording the human
+	// reason over the top is not a second rejection -- the status does not
+	// move, so there is no transition -- it is the difference between "parked
+	// for now" and "decided", and without it a decision made once has to be
+	// made again every fortnight.
+	if c.Status == model.StatusRejected {
+		if strings.HasPrefix(c.RejectReason, humanPrefix) {
+			return fmt.Sprintf("%s was already rejected by you", slug), nil
+		}
+		was := c.RejectReason
+		c.RejectReason = humanPrefix + reason
+		if _, err := s.Save(c); err != nil {
+			return "", fmt.Errorf("%w: %v", ErrGate, err)
+		}
+		record(a, "reject", slug, reason)
+		return fmt.Sprintf("%s stays rejected, now on your reason rather than %q",
+			slug, truncate(was, 60)), nil
+	}
+	c.RejectReason = humanPrefix + reason
+	if err := model.Transition(c, model.StatusRejected, humanPrefix+reason); err != nil {
 		return "", err
 	}
 	if _, err := s.Save(c); err != nil {
@@ -290,4 +309,15 @@ func record(a Auditor, kind, slug, detail string) {
 	if a != nil {
 		_ = a.Record(kind, slug, detail)
 	}
+}
+
+// humanPrefix marks a rejection a person made. store.ShouldReconsider keys off
+// it: a machine rejection expires, this one does not.
+const humanPrefix = "human rejection: "
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }

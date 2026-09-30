@@ -289,3 +289,57 @@ func TestLoadFailurePropagates(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestRejectUpgradesAMachineRejectionToAHumanOne(t *testing.T) {
+	// The scorer parks a candidate with a reason that expires; a person
+	// decides. Without this the decision is made again every fortnight.
+	c := cand("a/b", 1, model.StatusRejected)
+	c.RejectReason = "deferred: exceeded max_harvest=12 this run"
+	before := len(c.History)
+	s, a := storeWith(c), &fakeAudit{}
+
+	msg, err := Reject(s, a, c.Slug(), "the maintainers ruled out both fixes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(c.RejectReason, "human rejection:") {
+		t.Fatalf("reject_reason = %q", c.RejectReason)
+	}
+	// The status did not move, so nothing may be written to the history: a
+	// rejected -> rejected entry is not an edge the table has, and `doctor`
+	// checks every edge strictly.
+	if len(c.History) != before {
+		t.Fatalf("wrote %d history entries for a status that did not change",
+			len(c.History)-before)
+	}
+	if len(a.entries) == 0 {
+		t.Error("the decision was not audited")
+	}
+	if !strings.Contains(msg, "stays rejected") {
+		t.Errorf("unclear message: %q", msg)
+	}
+}
+
+func TestRejectDoesNotRewriteAnEarlierHumanRejection(t *testing.T) {
+	c := cand("a/b", 1, model.StatusRejected)
+	c.RejectReason = "human rejection: the first reason"
+	s := storeWith(c)
+	if _, err := Reject(s, &fakeAudit{}, c.Slug(), "a second reason"); err != nil {
+		t.Fatal(err)
+	}
+	if c.RejectReason != "human rejection: the first reason" {
+		t.Fatalf("overwrote the original decision: %q", c.RejectReason)
+	}
+}
+
+func TestRejectingAnAbandonedCandidateIsANoOp(t *testing.T) {
+	c := cand("a/b", 1, model.StatusAbandoned)
+	c.RejectReason = "push failed"
+	s := storeWith(c)
+	if _, err := Reject(s, &fakeAudit{}, c.Slug(), "changed my mind"); err != nil {
+		t.Fatal(err)
+	}
+	if c.RejectReason != "push failed" || c.Status != model.StatusAbandoned {
+		t.Fatalf("status=%s reason=%q", c.Status, c.RejectReason)
+	}
+}

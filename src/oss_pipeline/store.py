@@ -3,6 +3,7 @@ with `cat` and unstuck with a text editor."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,13 +32,30 @@ def load(slug: str) -> Candidate:
     return _hydrate(raw)
 
 
+def _known(cls, raw: dict) -> dict:
+    """Drop keys `cls` has no field for.
+
+    The Go rewrite writes the same files and has fields this version does not:
+    `topics` on RepoFacts, `took_over` on Candidate. Without this, every
+    candidate the Go binary saved raised TypeError here -- and discover read
+    that as "never seen", rebuilt the candidate from the search result and
+    threw the status and history away. Four approvals and twelve rejections
+    went that way in one scheduled sweep.
+
+    Dropping them loses nothing this version can use, and it is the right
+    default for a loader whose writer is ahead of it.
+    """
+    fields = {f.name for f in dataclasses.fields(cls)}
+    return {k: v for k, v in raw.items() if k in fields}
+
+
 def _hydrate(raw: dict) -> Candidate:
-    raw = dict(raw)
+    raw = _known(Candidate, raw)
     raw["status"] = Status(raw["status"])
     raw["contest"] = Contest(raw["contest"]) if raw.get("contest") else None
-    raw["pr_signal"] = PRSignal(**raw["pr_signal"]) if raw.get("pr_signal") else None
-    raw["brief"] = Brief(**raw["brief"]) if raw.get("brief") else None
-    raw["facts"] = RepoFacts(**raw["facts"]) if raw.get("facts") else None
+    raw["pr_signal"] = PRSignal(**_known(PRSignal, raw["pr_signal"])) if raw.get("pr_signal") else None
+    raw["brief"] = Brief(**_known(Brief, raw["brief"])) if raw.get("brief") else None
+    raw["facts"] = RepoFacts(**_known(RepoFacts, raw["facts"])) if raw.get("facts") else None
     return Candidate(**raw)
 
 
@@ -101,8 +119,13 @@ def should_reconsider(slug: str, *, after_days: int) -> bool:
         return True                       # never seen -- always consider
     try:
         cand = load(slug)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return True
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        # A file that exists but cannot be read is not a candidate we have
+        # never seen. Saying True here means discover builds a fresh one and
+        # overwrites whatever was on disk, which is how a human approval gets
+        # destroyed by a scheduled sweep. Refuse to touch it and say so.
+        print(f"    warn: leaving {slug} alone -- cannot read it: {exc}")
+        return False
     if cand.status is not Status.REJECTED:
         return False                      # live or terminal-by-success
     if cand.reject_reason.startswith("human rejection") or not is_transient(cand.reject_reason):

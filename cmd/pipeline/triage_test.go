@@ -227,3 +227,35 @@ func TestLinkedPRsRebuildTheURL(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func TestInterleaveByRepoSpreadsTheHarvestBudget(t *testing.T) {
+	// Without this the cap takes the first N in whatever order the store
+	// listed them, which is alphabetical -- so one busy project consumes the
+	// entire budget for the expensive phase.
+	in := []*model.Candidate{
+		{Repo: "a/one", Issue: 1}, {Repo: "a/one", Issue: 2}, {Repo: "a/one", Issue: 3},
+		{Repo: "b/two", Issue: 4}, {Repo: "b/two", Issue: 5},
+		{Repo: "c/three", Issue: 6},
+	}
+	got := interleaveByRepo(in)
+	var repos []string
+	for _, c := range got[:3] {
+		repos = append(repos, c.Repo)
+	}
+	if strings.Join(repos, " ") != "a/one b/two c/three" {
+		t.Fatalf("first three are %v, want one from each repository", repos)
+	}
+	if len(got) != len(in) {
+		t.Fatalf("lost candidates: %d in, %d out", len(in), len(got))
+	}
+	// Order inside a repository is the ranking discovery produced.
+	var aIssues []int
+	for _, c := range got {
+		if c.Repo == "a/one" {
+			aIssues = append(aIssues, c.Issue)
+		}
+	}
+	if fmt.Sprint(aIssues) != "[1 2 3]" {
+		t.Fatalf("reordered within a repository: %v", aIssues)
+	}
+}

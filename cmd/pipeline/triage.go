@@ -216,6 +216,13 @@ func (t triage) run(ctx context.Context, queue []*model.Candidate) int {
 	// overflow is rejected with a reason that says so, and store.ShouldReconsider
 	// treats that as transient, so a deferred candidate comes back rather than
 	// being lost.
+	// Spread across repositories before the cap bites. Discovery interleaves
+	// for exactly this reason and the effect is undone here otherwise: the
+	// first run of this command spent its whole budget on four argo-cd issues,
+	// of which the org cooldown would have let at most one become a pull
+	// request. The expensive phase has to sample the breadth, not the
+	// alphabet.
+	survivors = interleaveByRepo(survivors)
 	n := min(len(survivors), t.maxHarvest)
 	fmt.Printf("\nphase C: harvest and brief (%d of %d)\n", n, len(survivors))
 	proposed := 0
@@ -351,4 +358,27 @@ func clip(s string, n int) string {
 		return s
 	}
 	return string(r[:n])
+}
+
+// interleaveByRepo reorders so consecutive entries come from different
+// repositories: one from each, then a second from each, and so on. Order
+// within a repository is preserved, so the ranking discovery gave survives.
+func interleaveByRepo(cs []*model.Candidate) []*model.Candidate {
+	var order []string
+	buckets := map[string][]*model.Candidate{}
+	for _, c := range cs {
+		if _, ok := buckets[c.Repo]; !ok {
+			order = append(order, c.Repo)
+		}
+		buckets[c.Repo] = append(buckets[c.Repo], c)
+	}
+	out := make([]*model.Candidate, 0, len(cs))
+	for depth := 0; len(out) < len(cs); depth++ {
+		for _, repo := range order {
+			if b := buckets[repo]; depth < len(b) {
+				out = append(out, b[depth])
+			}
+		}
+	}
+	return out
 }

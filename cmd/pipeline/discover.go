@@ -100,6 +100,10 @@ func discoverCmd(root string, args []string) int {
 	written := 0
 	for _, f := range res.Found {
 		c := f.Candidate
+		linked := make([]int, 0, len(f.LinkedPRs))
+		for _, pr := range f.LinkedPRs {
+			linked = append(linked, pr.Number)
+		}
 		// A candidate already on disk keeps its history: overwriting it would
 		// discard a rejection reason, a brief, or a merged pull request.
 		if existing, err := st.Load(c.Slug()); err == nil {
@@ -108,6 +112,9 @@ func discoverCmd(root string, args []string) int {
 			existing.IssueUpdatedAt = c.IssueUpdatedAt
 			c = existing
 		}
+		// The search just told us what the timeline points at, so this is
+		// fresher than whatever a previous sweep recorded.
+		c.LinkedPRs = linked
 		if _, err := st.Save(c); err != nil {
 			fmt.Fprintf(os.Stderr, "save %s: %v\n", c.Slug(), err)
 			continue

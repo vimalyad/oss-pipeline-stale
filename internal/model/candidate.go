@@ -79,21 +79,27 @@ type HistoryEntry struct {
 // existing 224 files with no migration step, so both versions can run against
 // the same state and have their output compared.
 type Candidate struct {
-	Repo           string     `json:"repo"`
-	Issue          int        `json:"issue"`
-	Title          string     `json:"title"`
-	URL            string     `json:"url"`
-	Status         Status     `json:"status"`
-	Labels         []string   `json:"labels"`
-	Comments       int        `json:"comments"`
-	Reactions      int        `json:"reactions"`
-	IssueUpdatedAt string     `json:"issue_updated_at"`
-	IssueCreatedAt string     `json:"issue_created_at"`
-	Contest        Contest    `json:"contest"`
-	PRSignal       *PRSignal  `json:"pr_signal"`
-	Brief          *Brief     `json:"brief"`
-	Facts          *RepoFacts `json:"facts"`
-	ScoreFailures  []string   `json:"score_failures"`
+	Repo           string   `json:"repo"`
+	Issue          int      `json:"issue"`
+	Title          string   `json:"title"`
+	URL            string   `json:"url"`
+	Status         Status   `json:"status"`
+	Labels         []string `json:"labels"`
+	Comments       int      `json:"comments"`
+	Reactions      int      `json:"reactions"`
+	IssueUpdatedAt string   `json:"issue_updated_at"`
+	IssueCreatedAt string   `json:"issue_created_at"`
+	// LinkedPRs are the open pull requests the issue's timeline points at, as
+	// the discovery search saw them. Kept rather than consumed in the same
+	// run so triage is a separate command that does not have to ask GitHub
+	// again -- and so a contested verdict can be re-read later against the
+	// evidence it was actually made on.
+	LinkedPRs     []int      `json:"linked_prs,omitempty"`
+	Contest       Contest    `json:"contest"`
+	PRSignal      *PRSignal  `json:"pr_signal"`
+	Brief         *Brief     `json:"brief"`
+	Facts         *RepoFacts `json:"facts"`
+	ScoreFailures []string   `json:"score_failures"`
 	// SoftPenalties do not reject; they rank a candidate below cleaner ones.
 	SoftPenalties []string `json:"soft_penalties"`
 	// Blockers need a one-off human action (signing a CLA, say) first.

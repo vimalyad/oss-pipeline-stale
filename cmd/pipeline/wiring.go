@@ -63,6 +63,7 @@ var (
 	_ publish.API           = (*ghx.Client)(nil)
 	_ cilog.API             = cilogAPI{}
 	_ repofacts.API         = plainGet{}
+	_ repofacts.Judge       = (*llm.Client)(nil)
 	_ repofacts.Cache       = (*store.Store)(nil)
 	_ recipe.Commands       = recipe.CommandsFunc(nil)
 	_ replies.Commenter     = prCommenter{}

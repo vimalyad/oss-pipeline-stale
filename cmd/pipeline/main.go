@@ -72,6 +72,8 @@ func main() {
 		code = reportCmd(root, os.Args[2:])
 	case "discover":
 		code = discoverCmd(root, os.Args[2:])
+	case "triage":
+		code = triageCmd(root, os.Args[2:])
 	default:
 		usage()
 		code = 2
@@ -91,6 +93,7 @@ func usage() {
   resume    lift a halt
 
   discover  [--execute]       sweep the watchlist for new candidate issues
+  triage    [--execute]       classify, harvest and brief what discover found
   propose   rank what is waiting and write today's report
   approve   <slug>            accept a proposal for implementation
   reject    <slug> <reason>   decline one, with a reason that is kept

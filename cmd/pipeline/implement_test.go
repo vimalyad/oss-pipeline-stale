@@ -10,6 +10,7 @@ import (
 
 	"github.com/vimalyad/osspipeline/internal/ghx"
 	"github.com/vimalyad/osspipeline/internal/model"
+	"github.com/vimalyad/osspipeline/internal/notify"
 	"github.com/vimalyad/osspipeline/internal/policy"
 	"github.com/vimalyad/osspipeline/internal/repo"
 	"github.com/vimalyad/osspipeline/internal/store"
@@ -341,4 +342,34 @@ func TestSubmitWillNotPushForABodyItWouldRefuseToSend(t *testing.T) {
 		t.Fatalf("status=%s saved=%v -- nothing happened, so nothing should be recorded",
 			c.Status, st.saved)
 	}
+}
+
+func TestSubmitNotifiesOnlyAfterThePullRequestIsOpen(t *testing.T) {
+	p, _, h, _, _, c := fixture(t)
+	var events []notify.Event
+	p.notify = func(e notify.Event) { events = append(events, e) }
+
+	if code := p.submit(context.Background(), c, "/clone", plan(), "go"); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if len(events) != 1 || events[0].Kind != notify.KindPROpened {
+		t.Fatalf("events = %+v", events)
+	}
+	if events[0].URL != "https://github.com/helm/helm/pull/9001" {
+		t.Fatalf("the notification does not link to the pull request: %q", events[0].URL)
+	}
+
+	// And nothing when it fails: a push that never became a pull request must
+	// not tell the user one is open.
+	p2, _, h2, _, _, c2 := fixture(t)
+	events = nil
+	p2.notify = func(e notify.Event) { events = append(events, e) }
+	h2.err = fmt.Errorf("%w: gh pr create", ghx.ErrGh)
+	if code := p2.submit(context.Background(), c2, "/clone", plan(), "go"); code == 0 {
+		t.Fatal("reported success")
+	}
+	if len(events) != 0 {
+		t.Fatalf("notified about a pull request that does not exist: %+v", events)
+	}
+	_ = h
 }

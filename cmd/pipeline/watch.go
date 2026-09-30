@@ -13,7 +13,9 @@ import (
 	"github.com/vimalyad/osspipeline/internal/halt"
 	"github.com/vimalyad/osspipeline/internal/identity"
 	"github.com/vimalyad/osspipeline/internal/model"
+	"github.com/vimalyad/osspipeline/internal/notify"
 	"github.com/vimalyad/osspipeline/internal/policy"
+	"github.com/vimalyad/osspipeline/internal/profile"
 	"github.com/vimalyad/osspipeline/internal/store"
 	"github.com/vimalyad/osspipeline/internal/watch"
 )
@@ -66,6 +68,13 @@ func watchCmd(root string, args []string) int {
 		return 1
 	}
 
+	prof, err := profile.Load(root)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	note := notifier(root, prof)
+
 	log := audit.New(root)
 	problems := 0
 	for _, c := range open {
@@ -75,6 +84,21 @@ func watchCmd(root string, args []string) int {
 			Store:  st,
 			Audit:  func(kind, slug, detail string) { _ = log.Record(kind, slug, detail) },
 			Now:    time.Now,
+			// A dry run must not push to the phone. Everything else about a
+			// dry run is "look but do not touch", and a notification is a
+			// side effect the user cannot undo by re-running.
+			Notify: func(e notify.Event) {
+				if !execute {
+					fmt.Printf("    [dry run] would notify p%d: %s\n", e.Priority, e.Title)
+					return
+				}
+				sent, err := note.Send(ctx, e)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "    notify:", err)
+				} else if sent {
+					fmt.Printf("    notified: %s\n", e.Title)
+				}
+			},
 			// No Fixer and no Feedback classifier yet: without them a cycle
 			// reports and queues but never pushes, which is the correct
 			// behaviour to ship first.

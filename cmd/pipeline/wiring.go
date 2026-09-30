@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strconv"
 
 	"github.com/vimalyad/osspipeline/internal/audit"
@@ -14,6 +16,7 @@ import (
 	"github.com/vimalyad/osspipeline/internal/harvest"
 	"github.com/vimalyad/osspipeline/internal/implement"
 	"github.com/vimalyad/osspipeline/internal/llm"
+	"github.com/vimalyad/osspipeline/internal/notify"
 	"github.com/vimalyad/osspipeline/internal/profile"
 	"github.com/vimalyad/osspipeline/internal/propose"
 	"github.com/vimalyad/osspipeline/internal/publish"
@@ -129,3 +132,21 @@ func toolchainCommands() recipe.Commands {
 var _ interface {
 	Run(ctx context.Context, cmd string) (sandbox.Result, error)
 } = (*sandbox.Session)(nil)
+
+// notifier builds the phone channel from config/profile.yaml.
+//
+// A missing topic file is not an error and never blocks a run: notify.Send
+// reports it and returns. The pipeline's job is to do the work; telling the
+// user about it is important but not load-bearing, and a pipeline that
+// refused to run because a topic file was absent would be worse than a quiet
+// one.
+func notifier(root string, prof *profile.Profile) *notify.Notifier {
+	n := prof.Notifications
+	cfg, err := notify.LoadConfig(root, n.Ntfy.Server, n.Ntfy.TopicFile,
+		n.Ntfy.CommandTopicFile, n.QuietHours.Start, n.QuietHours.End, n.QuietHours.TZ)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "notify config:", err)
+		return notify.New(root, notify.Config{})
+	}
+	return notify.New(root, cfg)
+}

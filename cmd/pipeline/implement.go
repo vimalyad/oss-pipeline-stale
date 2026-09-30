@@ -20,7 +20,9 @@ import (
 	"github.com/vimalyad/osspipeline/internal/llm"
 	"github.com/vimalyad/osspipeline/internal/lock"
 	"github.com/vimalyad/osspipeline/internal/model"
+	"github.com/vimalyad/osspipeline/internal/notify"
 	"github.com/vimalyad/osspipeline/internal/policy"
+	"github.com/vimalyad/osspipeline/internal/profile"
 	"github.com/vimalyad/osspipeline/internal/recipe"
 	"github.com/vimalyad/osspipeline/internal/repo"
 	"github.com/vimalyad/osspipeline/internal/repro"
@@ -338,8 +340,21 @@ func implementCmd(root string, args []string) int {
 		fmt.Fprintln(os.Stderr, "refusing to submit: the problems above must clear first")
 		return 1
 	}
+	prof, perr := profile.Load(root)
+	if perr != nil {
+		fmt.Fprintln(os.Stderr, "error:", perr)
+		return 1
+	}
+	note := notifier(root, prof)
 	pub := publisher{root: root, caps: cfg.Policy.Caps, st: st, log: log,
-		git: rm, gh: gh, brain: brain, id: sid}
+		git: rm, gh: gh, brain: brain, id: sid,
+		notify: func(e notify.Event) {
+			if sent, err := note.Send(ctx, e); err != nil {
+				fmt.Fprintln(os.Stderr, "notify:", err)
+			} else if sent {
+				say("notified: " + e.Title)
+			}
+		}}
 	return pub.submit(ctx, c, clone, plan, res.Toolchain)
 }
 
@@ -364,6 +379,10 @@ type publisher struct {
 	gh    prGH
 	brain submit.Judge
 	id    submit.Identity
+	// notify is a function rather than the notifier, so the publishing
+	// sequence can be tested without one and so a failure to reach the phone
+	// can never fail a pull request that is already open.
+	notify func(notify.Event)
 }
 
 type prStore interface {
@@ -533,6 +552,9 @@ func (p publisher) submit(ctx context.Context, c *model.Candidate, clone string,
 		fmt.Fprintln(os.Stderr, "state:", err)
 		fmt.Fprintln(os.Stderr, "the pull request IS open at", url)
 		return 1
+	}
+	if p.notify != nil {
+		p.notify(notify.Opened(c.Slug(), c.Repo, c.Issue, url, plan.Title))
 	}
 	fmt.Printf("\nopened %s\n", url)
 	return 0

@@ -26,6 +26,7 @@ const (
 	KindBlockedNeedsHuman = "blocked_needs_human"
 	KindInternalError     = "internal_error"
 	KindHalted            = "halted"
+	KindPROpened          = "pr_opened"
 	KindAutoPROpened      = "auto_pr_opened"
 	KindDigest            = "daily_digest"
 )
@@ -41,6 +42,23 @@ func Immediate(kind string) bool {
 	// needs_approval is deliberately NOT immediate: nothing is waiting on it,
 	// the candidate keeps, and one question at a time is the whole design.
 	return false
+}
+
+// Opened announces a pull request this pipeline just put in front of
+// maintainers. Not immediate by the rule above -- nothing is waiting on the
+// user -- but it earns a push anyway, because it is the one moment where
+// something irreversible has happened under their name and the digest is
+// hours away. Priority stays default so quiet hours still hold it.
+func Opened(slug, repo string, issue int, prURL, title string) Event {
+	return Event{
+		Kind: KindPROpened, Slug: slug, Priority: PriorityDefault,
+		Title:     fmt.Sprintf("Opened: %s#%d", repo, issue),
+		Body:      title,
+		URL:       prURL,
+		Tags:      []string{"rocket"},
+		DedupeKey: "pr_opened:" + slug,
+		Actions:   []Action{{Label: "Open PR", Verb: "view", URL: prURL}},
+	}
 }
 
 // Merged announces the outcome the entire pipeline exists to produce.

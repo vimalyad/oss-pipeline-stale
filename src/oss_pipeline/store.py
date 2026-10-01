@@ -149,4 +149,9 @@ def load_repo_facts(repo: str) -> RepoFacts | None:
     p = REPOS / f"{repo.replace('/', '__')}.json"
     if not p.exists():
         return None
-    return RepoFacts(**json.loads(p.read_text()))
+    # Same forward-compatibility rule as _hydrate, and missed there once
+    # already: the cached facts are written by whichever binary ran last, and
+    # the Go one records `topics`. Unguarded, this raised TypeError out of
+    # discover's phase B2 and took the whole stage down -- a full day with no
+    # candidates and no proposals, from one extra key.
+    return RepoFacts(**_known(RepoFacts, json.loads(p.read_text())))

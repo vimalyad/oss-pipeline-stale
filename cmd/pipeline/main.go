@@ -66,6 +66,8 @@ func main() {
 		code = claSignedCmd(root, os.Args[2:])
 	case "implement":
 		code = implementCmd(root, os.Args[2:])
+	case "daily":
+		code = dailyCmd(root, os.Args[2:])
 	case "watch":
 		code = watchCmd(root, os.Args[2:])
 	case "replies":
@@ -94,6 +96,7 @@ func usage() {
   halt      stop every scheduled stage (takes a reason)
   resume    lift a halt
 
+  daily     [--execute]       one full cycle, in dependency order (what launchd runs)
   discover  [--execute]       sweep the watchlist for new candidate issues
   triage    [--execute]       classify, harvest and brief what discover found
   propose   rank what is waiting and write today's report

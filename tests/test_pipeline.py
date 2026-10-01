@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import pathlib
 from datetime import datetime, timedelta, timezone
@@ -984,3 +985,50 @@ def test_private_addresses_are_caught_without_being_hardcoded():
         except (UnicodeDecodeError, OSError):
             continue
         assert work not in body, f"{work} appears in tracked file {rel}"
+
+
+def test_loaders_ignore_fields_written_by_a_newer_writer(tmp_path, monkeypatch):
+    """Both loaders, not just the candidate one.
+
+    The Go rewrite writes the same files and has fields this version does not.
+    Guarding _hydrate and forgetting load_repo_facts cost a full day of
+    discovery: phase B2 calls it for every candidate, the TypeError escaped
+    the stage, and the sweep found nothing at all.
+    """
+    import json
+    from oss_pipeline import store
+    from oss_pipeline.models import RepoFacts, Status
+
+    facts = {f.name: getattr(RepoFacts(repo="a/b"), f.name)
+             for f in dataclasses.fields(RepoFacts)}
+    facts["repo"] = "a/b"
+    facts["topics"] = ["from-the-future"]          # Go writes this; we do not
+
+    monkeypatch.setattr(store, "REPOS", tmp_path / "repos")
+    (tmp_path / "repos").mkdir()
+    (tmp_path / "repos" / "a__b.json").write_text(json.dumps(facts))
+    assert store.load_repo_facts("a/b").repo == "a/b"
+
+    cand = {"repo": "a/b", "issue": 1, "title": "t", "url": "u",
+            "status": Status.PROPOSED.value, "facts": facts,
+            "took_over": True}                      # and this
+    monkeypatch.setattr(store, "DIR", tmp_path / "candidates")
+    (tmp_path / "candidates").mkdir()
+    (tmp_path / "candidates" / "a__b__1.json").write_text(json.dumps(cand))
+    loaded = store.load("a__b__1")
+    assert loaded.status is Status.PROPOSED
+    assert loaded.facts.repo == "a/b"
+
+
+def test_an_unreadable_candidate_is_never_treated_as_unseen(tmp_path, monkeypatch):
+    """should_reconsider returning True is how discover decides to overwrite.
+
+    A file it cannot parse is not a candidate we have never seen, and saying
+    so destroyed four approvals and twelve rejections in one sweep.
+    """
+    from oss_pipeline import store
+
+    monkeypatch.setattr(store, "DIR", tmp_path)
+    (tmp_path / "broken.json").write_text("{not json at all")
+    assert store.should_reconsider("broken", after_days=14) is False
+    assert store.should_reconsider("never-seen-at-all", after_days=14) is True

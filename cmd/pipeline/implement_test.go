@@ -439,3 +439,45 @@ func isRepliesPost(n ast.Node) bool {
 	pkg, ok := sel.X.(*ast.Ident)
 	return ok && pkg.Name == "replies"
 }
+
+func TestApprovedQueueIsOldestApprovalFirst(t *testing.T) {
+	// A candidate that has waited is one whose issue is getting staler, and
+	// the newest approval is the one most likely to be reconsidered.
+	mk := func(issue int, at string) *model.Candidate {
+		return &model.Candidate{Repo: "a/b", Issue: issue, Status: model.StatusApproved,
+			History: []model.HistoryEntry{
+				{At: "2026-09-01T00:00:00+00:00", To: string(model.StatusProposed)},
+				{At: at, To: string(model.StatusApproved)},
+			}}
+	}
+	cs := []*model.Candidate{
+		mk(3, "2026-09-30T10:00:00+00:00"),
+		mk(1, "2026-09-28T10:00:00+00:00"),
+		mk(2, "2026-09-29T10:00:00+00:00"),
+	}
+	sortByApprovedAt(cs)
+	var got []int
+	for _, c := range cs {
+		got = append(got, c.Issue)
+	}
+	if fmt.Sprint(got) != "[1 2 3]" {
+		t.Fatalf("order = %v", got)
+	}
+}
+
+func TestADailyCapStopsTheQueueButARepoCapDoesNot(t *testing.T) {
+	// "one per repo" says nothing about the next candidate, which is usually
+	// a different repository. "two opened today" says everything about it.
+	if !heldByADailyCap([]string{"2 pull requests opened today (cap 2)"}) {
+		t.Error("the daily budget should stop the queue")
+	}
+	if !heldByADailyCap([]string{"5 pull requests already open (cap 5)"}) {
+		t.Error("the open cap should stop the queue")
+	}
+	if heldByADailyCap([]string{"already have an open pull request on helm/helm"}) {
+		t.Error("a per-repo cap must not stop the whole queue")
+	}
+	if heldByADailyCap([]string{"kornia is in cooldown until 3 Oct (kornia/kornia#4455)"}) {
+		t.Error("an org cooldown must not stop the whole queue")
+	}
+}

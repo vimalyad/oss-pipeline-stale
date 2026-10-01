@@ -4,6 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -372,4 +376,66 @@ func TestSubmitNotifiesOnlyAfterThePullRequestIsOpen(t *testing.T) {
 		t.Fatalf("notified about a pull request that does not exist: %+v", events)
 	}
 	_ = h
+}
+
+// There must be no way to post every queued reply at once. A reply goes out
+// under the user's name to a person waiting for it, and the design asks one
+// question at a time with the full text in front of them. A sweep would answer
+// that question on their behalf, which is exactly what left five drafts unsent
+// for days in v1 -- the opposite failure, same cause: nobody decided.
+func TestNoBulkReplyPosting(t *testing.T) {
+	src, err := os.ReadFile("replies.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "replies.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// replies.Post may be called from exactly one function, and not from a
+	// loop inside it.
+	callers := map[string]int{}
+	var inLoop []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		fn, ok := n.(*ast.FuncDecl)
+		if !ok {
+			return true
+		}
+		ast.Inspect(fn, func(m ast.Node) bool {
+			switch loop := m.(type) {
+			case *ast.RangeStmt, *ast.ForStmt:
+				ast.Inspect(loop.(ast.Node), func(k ast.Node) bool {
+					if isRepliesPost(k) {
+						inLoop = append(inLoop, fn.Name.Name)
+					}
+					return true
+				})
+			}
+			if isRepliesPost(m) {
+				callers[fn.Name.Name]++
+			}
+			return true
+		})
+		return true
+	})
+	if len(inLoop) > 0 {
+		t.Fatalf("replies.Post is called inside a loop in %v", inLoop)
+	}
+	if len(callers) != 1 || callers["repliesPost"] != 1 {
+		t.Fatalf("replies.Post callers = %v, want exactly repliesPost once", callers)
+	}
+}
+
+func isRepliesPost(n ast.Node) bool {
+	call, ok := n.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Post" {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "replies"
 }

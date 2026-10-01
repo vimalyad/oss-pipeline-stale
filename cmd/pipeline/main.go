@@ -68,6 +68,8 @@ func main() {
 		code = implementCmd(root, os.Args[2:])
 	case "watch":
 		code = watchCmd(root, os.Args[2:])
+	case "replies":
+		code = repliesCmd(root, os.Args[2:])
 	case "report":
 		code = reportCmd(root, os.Args[2:])
 	case "discover":
@@ -105,6 +107,7 @@ func usage() {
                                 dry run by default, which still does everything
                                 except commit, push and open the pull request
   watch     [--execute]       one cycle over every open pull request
+  replies   [list|draft|post] read, write and send answers to maintainers
   report    [--publish]       the status page, optionally mirrored to a gist
 `)
 }

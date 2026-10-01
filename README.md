@@ -97,11 +97,11 @@ action.
 
 ## Status
 
-The system runs daily and hourly under `launchd`. It is mid-port from Python to
-Go; the Python remains authoritative until the port reaches parity, and both
-run against the same state files so their output can be compared directly.
+The system runs daily and hourly under `launchd`, and as of 1 October 2026 both
+jobs run the Go binary. The Python implementation is kept, unscheduled, as the
+rollback target and as the second opinion the parity gates compare against.
 
-Two parity gates guard the port:
+Two parity gates guarded the port:
 
 - `pipeline status` must be byte-identical between implementations.
 - `pipeline rescore` must produce the same verdict *and the same reason string*
@@ -112,6 +112,23 @@ Reaching byte-level parity on the second one found a real defect rather than a
 cosmetic one: the Go scorer was not falling back to cached repository facts, so
 it rejected candidates the Python accepted. Comparing verdicts alone would have
 missed it.
+
+What the gates did *not* catch is worth recording, because it is the failure
+that actually cost something. Running both implementations against one set of
+state files makes the newer one's writes an input to the older one, and the Go
+binary records two fields the Python dataclasses have no slot for. Python's
+loaders raised `TypeError`; `should_reconsider` read that as "never seen
+before" and `discover` rebuilt sixteen candidates from the search result,
+discarding four human approvals and twelve human rejections. A second instance
+one function away, in the repo-facts loader, took a whole day's discovery stage
+down before it was found.
+
+Both are fixed -- the loaders ignore unknown keys, and a file that exists but
+cannot be read is never treated as absent -- but the lesson is about the shape
+of the gate rather than the bug. Comparing two implementations' *output* says
+nothing about what happens when they share a *writable* input. A shared-state
+port needs a test that the older reader survives the newer writer, and there
+wasn't one.
 
 ---
 
@@ -124,7 +141,25 @@ pipeline status                  # what is tracked and what is waiting
 pipeline rescore                 # re-evaluate stored candidates, offline
 pipeline check <file>            # screen text destined for a public comment
 pipeline halt "reason"           # stop every scheduled stage
+
+pipeline daily    [--execute]    # one full cycle, what launchd runs at 09:30
+pipeline discover [--execute]    # sweep the watchlist
+pipeline triage   [--execute]    # classify, harvest and brief what it found
+pipeline propose                 # rank and write today's report
+pipeline approve <slug>          # the human gate
+pipeline reject  <slug> <reason>
+pipeline retry   <slug> <reason> # put abandoned work back in the queue
+pipeline implement <slug> [--execute]
+pipeline watch    [--execute]    # one cycle over every open pull request
+pipeline replies  [list|draft|post <slug> <n>]
 ```
+
+Rollback is one line per job: point `ProgramArguments[0]` in the two plists
+under `~/Library/LaunchAgents` back at `.venv/bin/pipeline` and reload them.
+
+The implement stage needs Docker running. If it is not, the stage fails on the
+image build *before* any state changes, so the candidate stays approved and the
+next cycle retries it.
 
 Dry run is the default. Nothing forks, commits, pushes or opens a pull request
 without `--execute`.

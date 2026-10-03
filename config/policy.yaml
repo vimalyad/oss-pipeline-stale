@@ -13,6 +13,10 @@ caps:
 # Contest classification thresholds (days). Objective signals only.
 staleness:
   author_silent_days: 60
+  # A pull request nobody has reviewed is the project's backlog, not abandoned
+  # work, and its author is waiting rather than stalling. Author silence only
+  # counts as staleness past this much longer window.
+  unreviewed_silent_days: 365
   changes_requested_days: 30
   ci_red_untouched_days: 30
   claim_honoured_days: 30     # respect "I'm working on this" for this long

@@ -85,6 +85,9 @@ type prDetail struct {
 				Nodes []struct {
 					State     string `json:"state"`
 					CreatedAt string `json:"createdAt"`
+					Author    *struct {
+						Login string `json:"login"`
+					} `json:"author"`
 				} `json:"nodes"`
 			} `json:"reviews"`
 		} `json:"pullRequest"`
@@ -136,7 +139,16 @@ func Signal(ctx context.Context, api API, repo string, number int, now time.Time
 		}
 	}
 	var lastChangesRequested string
+	reviewed := false
 	for _, r := range pr.Reviews.Nodes {
+		// A review by the author is not the project engaging with the work.
+		if r.Author != nil && r.Author.Login == author && author != "" {
+			continue
+		}
+		// PENDING is an unsubmitted draft review, visible only to its writer.
+		if r.State != "" && r.State != "PENDING" {
+			reviewed = true
+		}
 		if r.State == "CHANGES_REQUESTED" && r.CreatedAt > lastChangesRequested {
 			lastChangesRequested = r.CreatedAt
 		}
@@ -155,6 +167,7 @@ func Signal(ctx context.Context, api API, repo string, number int, now time.Time
 		DaysSinceCommit:          daysSince(committed, now),
 		DaysSinceAuthorComment:   daysSince(lastAuthorComment, now),
 		DaysSinceChangesReqested: daysSince(lastChangesRequested, now),
+		Reviewed:                 reviewed,
 		HasStaleLabel:            hasStaleLabel(labels),
 		ChecksFailing:            rollup == "FAILURE" || rollup == "ERROR",
 	}, nil
@@ -179,8 +192,33 @@ func ClassifyOne(sig *model.PRSignal, st policy.Staleness) (model.Contest, []str
 	if sig.HasStaleLabel {
 		reasons = append(reasons, "carries a stale/abandoned label")
 	}
-	if sig.DaysSinceCommit != nil && *sig.DaysSinceCommit > st.AuthorSilentDays {
-		reasons = append(reasons, fmt.Sprintf("no commit for %dd", *sig.DaysSinceCommit))
+	// Author silence means abandonment only once the project has looked at
+	// the work. Before that it means the author finished and is waiting, and
+	// astral-sh/ruff#23140 is the case: it implements exactly what a MEMBER
+	// asked for on the issue, has never been reviewed, and went quiet five
+	// months ago. By author silence alone it classified as stale and the
+	// issue became a proposal -- and a competing pull request would have
+	// taken credit for someone else's unreviewed contribution while adding to
+	// the same queue nobody is reading.
+	//
+	// Past UnreviewedSilentDays it counts anyway. A pull request nobody has
+	// reviewed in that long is not a backlog entry, and its author is gone.
+	// Derived, not just read off the signal. Changes having been requested is
+	// a review by definition, and a signal that says one without the other is
+	// inconsistent -- which a hand-built one, or one stored before this field
+	// existed, can easily be. Deciding it here means the rule cannot be
+	// weakened by the shape of its input.
+	reviewed := sig.Reviewed || sig.DaysSinceChangesReqested != nil
+	silentDays := st.AuthorSilentDays
+	if !reviewed {
+		silentDays = st.UnreviewedSilentDays
+	}
+	if silentDays > 0 && sig.DaysSinceCommit != nil && *sig.DaysSinceCommit > silentDays {
+		why := fmt.Sprintf("no commit for %dd", *sig.DaysSinceCommit)
+		if !reviewed {
+			why += " and never reviewed"
+		}
+		reasons = append(reasons, why)
 	}
 	if sig.DaysSinceChangesReqested != nil && *sig.DaysSinceChangesReqested > st.ChangesRequestedDays {
 		// Unanswered means the author has not spoken since the request. An

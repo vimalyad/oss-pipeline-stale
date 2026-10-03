@@ -31,6 +31,7 @@ type Caps struct {
 
 type Staleness struct {
 	AuthorSilentDays     int `yaml:"author_silent_days"`
+	UnreviewedSilentDays int `yaml:"unreviewed_silent_days"`
 	ChangesRequestedDays int `yaml:"changes_requested_days"`
 	CIRedUntouchedDays   int `yaml:"ci_red_untouched_days"`
 	ClaimHonouredDays    int `yaml:"claim_honoured_days"`

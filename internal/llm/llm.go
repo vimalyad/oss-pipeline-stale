@@ -96,6 +96,7 @@ func (c *Client) Judge(ctx context.Context, prompt string) (string, error) {
 		"--model", ModelJudge,
 		"--disallowed-tools", "Read", "Write", "Edit", "Bash", "WebFetch", "WebSearch",
 	}
+	args = append(args, isolationFlags()...)
 	out, errOut, err := c.exec(ctx, "", args, "", c.Env)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -222,6 +223,7 @@ func (c *Client) JudgeWith(ctx context.Context, prompt, system, stdin string) (s
 		"--model", ModelJudge,
 		"--disallowed-tools", "Read", "Write", "Edit", "Bash", "WebFetch", "WebSearch",
 	}
+	args = append(args, isolationFlags()...)
 	if system != "" {
 		args = append(args, "--append-system-prompt", system)
 	}
@@ -263,7 +265,13 @@ func (c *Client) Patch(ctx context.Context, clone, prompt string) (string, error
 		"--add-dir", clone,
 		// Bash is absent on purpose. See above.
 		"--disallowed-tools", "Bash", "WebFetch", "WebSearch", "Task",
+		// Confines the file tools to --add-dir and drops the clone's own
+		// settings files. A target repository can carry a .claude/ directory,
+		// and a repository we are about to run an agent inside must not get
+		// to configure that agent.
+		"--restricted",
 	}
+	args = append(args, isolationFlags()...)
 	out, errOut, err := c.exec(ctx, clone, args, "", c.Env)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -272,4 +280,22 @@ func (c *Client) Patch(ctx context.Context, clone, prompt string) (string, error
 		return out, fmt.Errorf("%w: %v: %s", ErrLLM, err, text.Ellipsis(errOut, 300))
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// isolationFlags keep the agent's tool surface to what this pipeline grants it.
+//
+// --strict-mcp-config with no --mcp-config means no MCP servers at all. Without
+// it the CLI loads whatever the user has configured globally, and that is not a
+// theoretical hole: a Serena server initialised a .serena/ project directory
+// inside kubernetes-sigs/kind during a patch run, which preflight then refused
+// to ship -- on every repository, forever. The directory was the visible half.
+// The invisible half is that an agent working inside a third-party clone had
+// browser automation, a filesystem server and everything else on the user's
+// machine, while the design says it may Read, Write and Edit files in the clone
+// and nothing else.
+//
+// The judgement calls get the same treatment. They need no tools at all, and a
+// judgement call that could reach a browser is worse than a patch that can.
+func isolationFlags() []string {
+	return []string{"--strict-mcp-config"}
 }

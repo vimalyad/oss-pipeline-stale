@@ -16,7 +16,7 @@ var now = time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
 
 func st() policy.Staleness {
 	return policy.Staleness{
-		ActivePRDays: 30, AuthorSilentDays: 45,
+		ActivePRDays: 30, AuthorSilentDays: 45, UnreviewedSilentDays: 365,
 		ChangesRequestedDays: 30, CIRedUntouchedDays: 21,
 	}
 }
@@ -55,8 +55,17 @@ func TestClassifyOne(t *testing.T) {
 			model.ContestActivePR, "within 30d window"},
 		{"stale label", &model.PRSignal{DaysSinceCommit: ptr(40), HasStaleLabel: true},
 			model.ContestStalePR, "stale/abandoned label"},
-		{"long silence", &model.PRSignal{DaysSinceCommit: ptr(60)},
+		{"long silence after a review", &model.PRSignal{DaysSinceCommit: ptr(60), Reviewed: true},
 			model.ContestStalePR, "no commit for 60d"},
+		// The same silence with nobody having looked at it. The author
+		// finished and is waiting on the project, which is not abandonment.
+		{"long silence, never reviewed", &model.PRSignal{DaysSinceCommit: ptr(60)},
+			model.ContestActivePR, "no staleness signal either"},
+		// Failing CI is author inaction either way: it is their own pull
+		// request and they can see it is red.
+		{"CI red, never reviewed",
+			&model.PRSignal{DaysSinceCommit: ptr(60), ChecksFailing: true},
+			model.ContestStalePR, "CI red and untouched"},
 		{"unanswered changes requested",
 			&model.PRSignal{DaysSinceCommit: ptr(60), DaysSinceChangesReqested: ptr(40)},
 			model.ContestStalePR, "unanswered"},
@@ -223,8 +232,8 @@ func TestNoLinkedPRsNeedsNoCalls(t *testing.T) {
 // however many abandoned attempts are also linked.
 func TestOneLivePRIsEnough(t *testing.T) {
 	api := &fakeAPI{byNumber: map[int]any{
-		1: pr(1, 200, nil), // long abandoned
-		2: pr(2, 2, nil),   // live
+		1: reviewedPR(1, 200), // reviewed, then abandoned
+		2: pr(2, 2, nil),      // live
 	}}
 	got, sig, err := Classify(context.Background(), api, "a/b",
 		[]LinkedPR{{Number: 1}, {Number: 2}}, st(), now)
@@ -260,9 +269,9 @@ func TestAnUnreadablePRMakesTheIssueContested(t *testing.T) {
 // abandoned pull requests, never to justify contesting live work.
 func TestAllStaleSurfacesTheMostAbandoned(t *testing.T) {
 	api := &fakeAPI{byNumber: map[int]any{
-		1: pr(1, 60, nil),
-		2: pr(2, 400, nil),
-		3: pr(3, 90, nil),
+		1: reviewedPR(1, 60),
+		2: reviewedPR(2, 400),
+		3: reviewedPR(3, 90),
 	}}
 	got, sig, err := Classify(context.Background(), api, "a/b",
 		[]LinkedPR{{Number: 1}, {Number: 2}, {Number: 3}}, st(), now)
@@ -340,5 +349,108 @@ func TestADeletedAuthorDoesNotMatchEveryComment(t *testing.T) {
 	}
 	if sig.DaysSinceAuthorComment != nil {
 		t.Fatalf("a null author matched a null commenter: %v", *sig.DaysSinceAuthorComment)
+	}
+}
+
+// reviewedPR is pr() with one submitted review from somebody else, which is
+// the project having engaged with the work.
+func reviewedPR(number, committedDaysAgo int) map[string]any {
+	return pr(number, committedDaysAgo, map[string]any{
+		"reviews": map[string]any{"nodes": []any{map[string]any{
+			"state":     "COMMENTED",
+			"createdAt": now.AddDate(0, 0, -committedDaysAgo-1).Format(time.RFC3339),
+			"author":    map[string]any{"login": "a-maintainer"},
+		}}},
+	})
+}
+
+// TestAnUnreviewedPullRequestIsTheProjectsBacklog is the distinction author
+// silence cannot make on its own.
+//
+// astral-sh/ruff#23140 implements exactly what a MEMBER asked for on the
+// issue, has never been reviewed, and went quiet five months ago. By silence
+// alone it is stale, the issue became a proposal, and a competing pull request
+// would have taken credit for someone else's unreviewed contribution while
+// adding to the queue nobody is reading.
+func TestAnUnreviewedPullRequestIsTheProjectsBacklog(t *testing.T) {
+	const silent = 150 // five months, well past AuthorSilentDays
+
+	unreviewed := &fakeAPI{byNumber: map[int]any{1: pr(1, silent, nil)}}
+	got, _, err := Classify(context.Background(), unreviewed, "a/b",
+		[]LinkedPR{{Number: 1}}, st(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != model.ContestActivePR {
+		t.Fatalf("= %s; an unreviewed pull request is waiting on the project", got)
+	}
+
+	// The same silence, once a maintainer has looked at it, is the author
+	// having stopped.
+	reviewed := &fakeAPI{byNumber: map[int]any{1: reviewedPR(1, silent)}}
+	got, sig, err := Classify(context.Background(), reviewed, "a/b",
+		[]LinkedPR{{Number: 1}}, st(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != model.ContestStalePR {
+		t.Fatalf("= %s; a reviewed pull request gone quiet for %dd is stale", got, silent)
+	}
+	if sig == nil || !sig.Reviewed {
+		t.Fatalf("the signal does not record that it was reviewed: %+v", sig)
+	}
+}
+
+// Past the longer window it counts anyway: nobody reviewing a pull request for
+// a year is not a backlog, and its author is gone.
+func TestAVeryOldUnreviewedPullRequestIsStillStale(t *testing.T) {
+	api := &fakeAPI{byNumber: map[int]any{1: pr(1, 400, nil)}}
+	got, sig, err := Classify(context.Background(), api, "a/b",
+		[]LinkedPR{{Number: 1}}, st(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != model.ContestStalePR {
+		t.Fatalf("= %s", got)
+	}
+	if len(sig.Reasons) == 0 || !strings.Contains(sig.Reasons[0], "never reviewed") {
+		t.Fatalf("the reason does not say it was never reviewed: %v", sig.Reasons)
+	}
+}
+
+// A review the author left on their own pull request is not the project
+// engaging with it.
+func TestTheAuthorsOwnReviewDoesNotCount(t *testing.T) {
+	api := &fakeAPI{byNumber: map[int]any{1: pr(1, 150, map[string]any{
+		"reviews": map[string]any{"nodes": []any{map[string]any{
+			"state": "COMMENTED", "createdAt": now.Format(time.RFC3339),
+			"author": map[string]any{"login": "someone"}, // pr()'s own author
+		}}},
+	})}}
+	got, sig, err := Classify(context.Background(), api, "a/b",
+		[]LinkedPR{{Number: 1}}, st(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sig.Reviewed {
+		t.Error("counted the author's own review as the project engaging")
+	}
+	if got != model.ContestActivePR {
+		t.Fatalf("= %s", got)
+	}
+}
+
+// Nought disables the rule in the safe direction: an unreviewed pull request
+// is never contested, rather than always.
+func TestAnUnsetUnreviewedWindowLeavesWorkAlone(t *testing.T) {
+	s := st()
+	s.UnreviewedSilentDays = 0
+	api := &fakeAPI{byNumber: map[int]any{1: pr(1, 4000, nil)}}
+	got, _, err := Classify(context.Background(), api, "a/b", []LinkedPR{{Number: 1}}, s, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != model.ContestActivePR {
+		t.Fatalf("= %s", got)
 	}
 }

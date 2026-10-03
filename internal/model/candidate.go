@@ -9,16 +9,21 @@ import (
 // PRSignal records why an existing PR was judged active or abandoned.
 // Auditable signals only: dates and labels, never an opinion about the code.
 type PRSignal struct {
-	Number                   int      `json:"number"`
-	URL                      string   `json:"url"`
-	Author                   string   `json:"author"`
-	IsDraft                  bool     `json:"is_draft"`
-	DaysSinceCommit          *int     `json:"days_since_commit"`
-	DaysSinceAuthorComment   *int     `json:"days_since_author_comment"`
-	DaysSinceChangesReqested *int     `json:"days_since_changes_requested"`
-	HasStaleLabel            bool     `json:"has_stale_label"`
-	ChecksFailing            bool     `json:"checks_failing"`
-	Reasons                  []string `json:"reasons"`
+	Number                   int    `json:"number"`
+	URL                      string `json:"url"`
+	Author                   string `json:"author"`
+	IsDraft                  bool   `json:"is_draft"`
+	DaysSinceCommit          *int   `json:"days_since_commit"`
+	DaysSinceAuthorComment   *int   `json:"days_since_author_comment"`
+	DaysSinceChangesReqested *int   `json:"days_since_changes_requested"`
+	// Reviewed is whether anyone from the project has reviewed this pull
+	// request at all. It is what separates "the author gave up" from "the
+	// maintainers have not got to it", which look identical from author
+	// silence alone.
+	Reviewed      bool     `json:"reviewed"`
+	HasStaleLabel bool     `json:"has_stale_label"`
+	ChecksFailing bool     `json:"checks_failing"`
+	Reasons       []string `json:"reasons"`
 }
 
 // Brief is what the issue thread actually asks for -- the spec a patch is

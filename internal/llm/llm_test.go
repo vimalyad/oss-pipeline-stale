@@ -216,3 +216,63 @@ func TestJudgeCallsCannotReachTheFilesystem(t *testing.T) {
 		})
 	}
 }
+
+// TestNoInvocationInheritsTheUsersMCPServers is the fix for the hole that
+// mattered most in this whole session.
+//
+// The design says the patch agent may Read, Write and Edit files in the clone
+// and nothing else -- no shell, so it cannot execute a target repository's
+// code. MCP servers walked straight through that: the CLI loads whatever the
+// user has configured globally, so an agent working inside a third-party
+// clone had browser automation and a filesystem server as well. It was only
+// noticed because one of those servers wrote a .serena/ directory into
+// kubernetes-sigs/kind and preflight refused to ship it.
+//
+// Every invocation, not just the patch one. A judgement call that can reach a
+// browser is worse than a patch that can.
+func TestNoInvocationInheritsTheUsersMCPServers(t *testing.T) {
+	calls := map[string][]string{}
+	record := func(name string) func(context.Context, string, []string, string, []string) (string, string, error) {
+		return func(_ context.Context, _ string, args []string, _ string, _ []string) (string, string, error) {
+			calls[name] = args
+			return "ok", "", nil
+		}
+	}
+
+	c := New(nil)
+	c.exec = record("Judge")
+	_, _ = c.Judge(context.Background(), "p")
+	c.exec = record("JudgeWith")
+	_, _ = c.JudgeWith(context.Background(), "p", "s", "in")
+	c.exec = record("Patch")
+	_, _ = c.Patch(context.Background(), t.TempDir(), "p")
+
+	if len(calls) != 3 {
+		t.Fatalf("expected three invocations, captured %d: %v", len(calls), calls)
+	}
+	for name, args := range calls {
+		joined := strings.Join(args, " ")
+		if !contains(args, "--strict-mcp-config") {
+			t.Errorf("%s does not pass --strict-mcp-config; argv = %v", name, args)
+		}
+		// With the flag and no --mcp-config, the set of servers is empty. A
+		// --mcp-config appearing here would be granting tools back.
+		if strings.Contains(joined, "--mcp-config") {
+			t.Errorf("%s loads an MCP config: %v", name, args)
+		}
+	}
+	// The patch call also drops the clone's own settings: a repository we are
+	// about to run an agent inside must not get to configure that agent.
+	if !contains(calls["Patch"], "--restricted") {
+		t.Errorf("Patch does not pass --restricted; argv = %v", calls["Patch"])
+	}
+}
+
+func contains(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}

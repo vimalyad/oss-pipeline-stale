@@ -50,6 +50,7 @@ const (
 	SourceDevcontainer Source = "devcontainer"
 	SourceCI           Source = "ci"
 	SourceDockerfile   Source = "dockerfile"
+	SourceLanguage     Source = "language"
 )
 
 // Step is one command we derived, with the reason we believe it.
@@ -197,12 +198,64 @@ func Resolve(root, repo, lang string, ov *Override, tc Commands) (Recipe, error)
 			return df, nil
 		}
 	}
+	if lr, ok := fromLanguage(root, repo, lang); ok {
+		fill(&lr, tc, root)
+		if lr.Complete() {
+			return lr, nil
+		}
+	}
 	for _, r := range []Recipe{dc, ci} {
 		if r.BaseImage != "" {
 			return r, fmt.Errorf("%s via %s: %w", repo, r.Source, ErrIncomplete)
 		}
 	}
 	return Recipe{}, fmt.Errorf("%s: %w", repo, ErrNoRecipe)
+}
+
+// fromLanguage is the last tier: a recipe built from the language alone,
+// when every stronger tier has failed to produce a complete one.
+//
+// Go only, and the asymmetry is the point rather than an omission.
+//
+// Go states its own toolchain in the repository, so the base image is read
+// rather than guessed; `go mod download` is the whole install step for every
+// Go project there is; and `go test ./...` needs no per-project knowledge.
+// Nothing here is an assumption about the project -- it is the language's own
+// contract. kubernetes-sigs/kind is the case: all four of its workflows build
+// a real cluster inside the runner, so no CI tier can ever containerise, while
+// `go test ./...` runs its unit tests perfectly well.
+//
+// For Python, Node and Rust there is no equivalent. The install step is where
+// the project-specific knowledge lives -- which extras, which system
+// libraries, which wheel index -- and a default that guesses it produces a
+// patch that looks verified against an environment the maintainers do not
+// have. pytorch/vision is the standing example and must keep resolving to "no
+// recipe": a Python default would hand it `pip install -e .` and `pytest`, and
+// the result would say nothing about the CUDA path the issue is actually in.
+// A refusal the user can read is worth more than a green tick that is wrong.
+func fromLanguage(root, repo, lang string) (Recipe, bool) {
+	if !strings.EqualFold(lang, "go") {
+		return Recipe{}, false
+	}
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		return Recipe{}, false
+	}
+	tools := resolveVersionFiles(root, []Tool{{Lang: "go", VersionFile: ""}})
+	img := toolchainImage(tools, "go")
+	if img == "" {
+		return Recipe{}, false
+	}
+	from := "language default (go.mod present)"
+	return Recipe{
+		Repo: repo, Source: SourceLanguage, BaseImage: img,
+		Install: []Step{{Kind: "install", Run: "go mod download", From: from}},
+		Test:    []Step{{Kind: "test", Run: "go test ./...", From: from}},
+		Lint:    []Step{{Kind: "lint", Run: "go vet ./...", From: from}},
+		Evidence: []string{
+			"no stronger tier resolved; go.mod names the toolchain and " +
+				"`go test ./...` is the language's own contract",
+		},
+	}, true
 }
 
 // adopt merges a CI-derived recipe's commands into one that already has a base

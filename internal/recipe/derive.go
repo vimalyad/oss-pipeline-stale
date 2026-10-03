@@ -535,7 +535,17 @@ func resolveVersionFiles(root string, tools []Tool) []Tool {
 		// Falling back to a hardcoded default there picked 1.25 and would have
 		// failed the build for a reason the repository had already answered.
 		if t.VersionFile == "" && t.Lang == "go" {
+			// .go-version first, because the two files mean different things.
+			// go.mod's `go` directive is a *minimum*; .go-version is the
+			// compiler the project actually builds with. kubernetes-sigs/kind
+			// says so in a comment in its own go.mod -- "This is the go
+			// language version, NOT the compiler version" -- and the two are
+			// 1.17 and 1.26.7 there. Reading the floor picks a nine-release-old
+			// toolchain for a repository whose CI uses the current one.
 			t.VersionFile = "go.mod"
+			if _, err := os.Stat(filepath.Join(root, ".go-version")); err == nil {
+				t.VersionFile = ".go-version"
+			}
 		}
 		if t.VersionFile == "" {
 			continue
@@ -546,6 +556,10 @@ func resolveVersionFiles(root string, tools []Tool) []Tool {
 		}
 		body := string(b)
 		switch {
+		case strings.HasSuffix(t.VersionFile, ".go-version"):
+			// A full version, so take the series the way go.mod's is taken:
+			// golang:1.26.7-bookworm is not a published tag, golang:1.26 is.
+			t.Version = goSeries(strings.TrimPrefix(strings.TrimSpace(body), "v"))
 		case strings.HasSuffix(t.VersionFile, "go.mod"):
 			for _, line := range strings.Split(body, "\n") {
 				f := strings.Fields(line)

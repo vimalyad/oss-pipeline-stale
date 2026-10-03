@@ -567,3 +567,92 @@ func TestAnUnresolvableGoVersionFallsBackToGoMod(t *testing.T) {
 		t.Errorf("python version invented: %q", got[0].Version)
 	}
 }
+
+// TestLanguageDefaultRescuesAGoRepoWithNoContainerisableCI is the tier the
+// plan called for and nothing had built.
+//
+// kubernetes-sigs/kind is the case that found it. All four of its workflows
+// create a real cluster inside the runner -- docker, nerdctl, podman and a
+// Lima VM -- so no CI tier can ever containerise, and the resolver refused
+// outright rather than noticing that `go test ./...` runs its unit tests
+// perfectly well.
+func TestLanguageDefaultRescuesAGoRepoWithNoContainerisableCI(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module sigs.k8s.io/kind\n\ngo 1.17\n")
+	write(".go-version", "1.26.7\n")
+	// A workflow that reads its Go version from .go-version and then needs a
+	// VM. Nothing in it is derivable.
+	write(".github/workflows/vm.yaml", `name: VM
+on:
+  pull_request:
+jobs:
+  vm:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "go_version=$(cat .go-version)" >> "$GITHUB_OUTPUT"
+      - uses: lima-vm/lima-actions/setup@v1
+      - run: limactl start --name=default template://ubuntu
+`)
+
+	r, err := Resolve(root, "kubernetes-sigs/kind", "Go", nil, tc)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if r.Source != SourceLanguage {
+		t.Fatalf("source = %s, want %s", r.Source, SourceLanguage)
+	}
+	// .go-version, not the go.mod floor. kind's own go.mod says in a comment
+	// that its directive is the language version and not the compiler.
+	if r.BaseImage != "golang:1.26-bookworm" {
+		t.Fatalf("base = %q, want golang:1.26-bookworm (from .go-version, not go.mod's 1.17)",
+			r.BaseImage)
+	}
+	if !r.Complete() {
+		t.Fatalf("incomplete: %+v", r)
+	}
+	var tests []string
+	for _, s := range r.Test {
+		tests = append(tests, s.Run)
+	}
+	if len(tests) == 0 || tests[0] != "go test ./..." {
+		t.Fatalf("test steps = %v", tests)
+	}
+}
+
+// The tier must never rescue a language whose install step carries the
+// project-specific knowledge. pytorch/vision is covered above; this is the
+// rule itself, so a later "while we're here, Python too" has to delete a test
+// that says why not.
+func TestLanguageDefaultIsGoOnly(t *testing.T) {
+	root := t.TempDir()
+	for _, f := range []string{"setup.py", "pyproject.toml", "package.json", "Cargo.toml"} {
+		if err := os.WriteFile(filepath.Join(root, f), []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, lang := range []string{"Python", "TypeScript", "JavaScript", "Rust", "Ruby", ""} {
+		if r, ok := fromLanguage(root, "a/b", lang); ok {
+			t.Errorf("%s got a language default: %+v", lang, r)
+		}
+	}
+}
+
+// And not for a Go repository that has no go.mod to read the toolchain out of,
+// because then the base image would be a guess -- which is the thing this tier
+// exists to avoid.
+func TestLanguageDefaultNeedsGoMod(t *testing.T) {
+	if r, ok := fromLanguage(t.TempDir(), "a/b", "Go"); ok {
+		t.Fatalf("resolved with no go.mod: %+v", r)
+	}
+}

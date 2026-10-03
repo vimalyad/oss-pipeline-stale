@@ -139,3 +139,38 @@ func dockerImageIDs(t *testing.T) map[string]bool {
 	}
 	return ids
 }
+
+func TestPullBaseRefusesARecipeWithNoBaseImage(t *testing.T) {
+	// Reaching the registry with an empty reference asks Docker Hub for
+	// nothing and gets a confusing answer; saying so here is clearer.
+	if err := pullBase(context.Background(), "", ""); !errors.Is(err, ErrBuild) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestPullBaseSkipsWhatIsAlreadyLocal(t *testing.T) {
+	// The whole point: a base image already on this machine must not cost a
+	// registry round trip, because that round trip is what failed twice.
+	// scratch is always present and needs no network.
+	old := PullAttempts
+	PullAttempts = 0 // any pull attempt at all would now return a nil error
+	t.Cleanup(func() { PullAttempts = old })
+
+	out, err := exec.Command("docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}").Output()
+	if err != nil {
+		t.Skip("docker is not available here")
+	}
+	local := ""
+	for _, l := range strings.Split(string(out), "\n") {
+		if l = strings.TrimSpace(l); l != "" && !strings.Contains(l, "<none>") {
+			local = l
+			break
+		}
+	}
+	if local == "" {
+		t.Skip("no local images to check against")
+	}
+	if err := pullBase(context.Background(), local, ""); err != nil {
+		t.Fatalf("%s is already local and still tried to pull: %v", local, err)
+	}
+}

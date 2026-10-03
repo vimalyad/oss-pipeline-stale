@@ -27,6 +27,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/vimalyad/osspipeline/internal/guard"
 	"github.com/vimalyad/osspipeline/internal/llm"
 	"github.com/vimalyad/osspipeline/internal/model"
 	"github.com/vimalyad/osspipeline/internal/repro"
@@ -358,6 +359,16 @@ func ConfirmTestFailsFirst(ctx context.Context, g Git, r Reverter, offline Runne
 	committed, pending := g.NameStatus(ctx, clone)
 	var source, tests []string
 	for _, p := range splitPaths(committed, pending) {
+		// Not part of the patch, so holding it constant proves nothing -- and
+		// listing it in the pathspec is what broke this check on the first
+		// repository where a tool left a dot-directory in the clone:
+		// `git stash push -- .serena/project.yml` is a pathspec error, and
+		// the whole check failed before running a single test. Preflight
+		// still refuses to ship any of it; that is its job, not this one's.
+		if guard.AgentArtefacts.MatchString(p) || guard.Junk.MatchString(p) ||
+			guard.OurTooling[p] {
+			continue
+		}
 		if toolchain.IsTestFile(p) {
 			tests = append(tests, p)
 		} else {
@@ -378,7 +389,11 @@ func ConfirmTestFailsFirst(ctx context.Context, g Git, r Reverter, offline Runne
 		_ = os.WriteFile(patchFile, []byte(strings.TrimRight(full, "\n")+"\n"), 0o600)
 	}
 
-	stash := append([]string{"stash", "push", "--quiet", "--"}, source...)
+	// --include-untracked, because a patch that adds a new file plus a test
+	// for it is the ordinary shape of a fix, and `stash push` refuses an
+	// untracked pathspec without it. Scoped to `source` either way, so the
+	// test half of the patch stays in the tree -- which is the entire point.
+	stash := append([]string{"stash", "push", "--quiet", "--include-untracked", "--"}, source...)
 	if _, err := r.Git(ctx, clone, stash...); err != nil {
 		return FailsFirst{}, fmt.Errorf("%w: setting the source aside: %v", ErrImplement, err)
 	}

@@ -227,3 +227,54 @@ func TestAGenuineDescriptionIsNotRejected(t *testing.T) {
 		}
 	}
 }
+
+// TestUnknownAgentScaffoldingIsCaughtByTheGeneralRule is the test that
+// matters more than the name list.
+//
+// .serena/ appeared in a clone on 3 October and was not in AgentArtefacts.
+// New tools will keep appearing, so the protection cannot be a list of their
+// names; it has to be the question "does a bug fix create a top-level
+// directory this repository did not have?". The answer is no, and that is
+// what refused it.
+func TestUnknownAgentScaffoldingIsCaughtByTheGeneralRule(t *testing.T) {
+	for _, path := range []string{
+		".serena/project.yml",
+		".some-tool-nobody-has-heard-of/state.json",
+		".a-tool-invented-next-year/memories/notes.md",
+	} {
+		s := Shipment{
+			Files:            []string{"pkg/fix.go", path},
+			Diff:             "diff --git a/pkg/fix.go b/pkg/fix.go\n+real change\n",
+			ExistingTopLevel: map[string]bool{"pkg": true, "cmd": true, ".github": true},
+		}
+		problems := Inspect(s)
+		if len(problems) == 0 {
+			t.Fatalf("%s shipped clean", path)
+		}
+		dir, _, _ := strings.Cut(path, "/")
+		var saw bool
+		for _, p := range problems {
+			if strings.Contains(p.Why, dir) {
+				saw = true
+			}
+		}
+		if !saw {
+			t.Fatalf("%s: nothing named the offending directory: %v", path, problems)
+		}
+	}
+}
+
+// And a dot-directory the repository already has must not be flagged: plenty
+// of projects ship .github, .vscode or .devcontainer of their own.
+func TestExistingDotDirectoriesAreNotScaffolding(t *testing.T) {
+	s := Shipment{
+		Files:            []string{".github/dependabot.yml", "pkg/fix.go"},
+		Diff:             "diff --git a/pkg/fix.go b/pkg/fix.go\n+real change\n",
+		ExistingTopLevel: map[string]bool{"pkg": true, ".github": true},
+	}
+	for _, p := range Inspect(s) {
+		if strings.Contains(p.Why, "top-level") {
+			t.Fatalf("flagged a directory the repository already had: %s", p.Why)
+		}
+	}
+}

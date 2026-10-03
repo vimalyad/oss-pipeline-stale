@@ -40,6 +40,7 @@ const (
 	ManagedLabel = "ossp.managed=1"
 	repoLabel    = "ossp.repo"
 	buildTimeout = 30 * time.Minute
+	pullTimeout  = 10 * time.Minute
 	tailBytes    = 8000
 )
 
@@ -74,6 +75,20 @@ func Ensure(ctx context.Context, r recipe.Recipe) (Built, error) {
 		return Built{}, fmt.Errorf("%w: write Dockerfile: %v", ErrBuild, err)
 	}
 
+	// Pull the base image before building, with retries.
+	//
+	// BuildKit resolves `FROM` against the registry itself, and when Docker
+	// Hub is slow it gives up with `DeadlineExceeded: context deadline
+	// exceeded` on a timeout we do not set and cannot lengthen. That failed
+	// the same candidate on two consecutive scheduled runs -- an approved
+	// patch going unwritten for two days because a metadata fetch was slow at
+	// 09:30. A separate pull is retryable, says plainly what went wrong, and
+	// leaves the metadata cached locally so the build's own resolution is a
+	// local lookup.
+	if err := pullBase(ctx, r.BaseImage, r.Platform); err != nil {
+		return Built{Tag: tag}, err
+	}
+
 	args := []string{"build", "-t", tag, "--label", ManagedLabel, "--label", repoLabel + "=" + r.Repo}
 	if r.Platform != "" {
 		args = append(args, "--platform", r.Platform)
@@ -92,6 +107,46 @@ func Ensure(ctx context.Context, r recipe.Recipe) (Built, error) {
 		return b, fmt.Errorf("%w: %s: %v\n%s", ErrBuild, tag, err, b.Output)
 	}
 	return b, nil
+}
+
+// PullAttempts and PullBackoff bound the retry. Deliberately small: a
+// registry that is unreachable three times over half a minute is not going to
+// answer on the fourth, and the stage failing cleanly is better than a
+// scheduled run that holds the lock for an hour.
+var (
+	PullAttempts = 3
+	PullBackoff  = 10 * time.Second
+)
+
+func pullBase(ctx context.Context, base, platform string) error {
+	if base == "" {
+		return fmt.Errorf("%w: recipe has no base image", ErrBuild)
+	}
+	if exists(ctx, base) {
+		return nil
+	}
+	var last error
+	for attempt := 0; attempt < PullAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(PullBackoff * time.Duration(attempt)):
+			}
+		}
+		args := []string{"pull", "--quiet"}
+		if platform != "" {
+			args = append(args, "--platform", platform)
+		}
+		c, cancel := context.WithTimeout(ctx, pullTimeout)
+		out, err := exec.CommandContext(c, "docker", append(args, base)...).CombinedOutput()
+		cancel()
+		if err == nil {
+			return nil
+		}
+		last = fmt.Errorf("%w: pull %s: %v\n%s", ErrBuild, base, err, tail(string(out)))
+	}
+	return last
 }
 
 func exists(ctx context.Context, tag string) bool {

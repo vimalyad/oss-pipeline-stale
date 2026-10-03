@@ -26,8 +26,14 @@ var OurTooling = map[string]bool{"uv.lock": true}
 // AgentArtefacts is agent scaffolding. An auto-fix run once committed a
 // 92-line agent workflow note into a real public PR: it was not build junk and
 // not a workflow file, so nothing that existed at the time caught it.
+// The name list is the actionable half -- "never ship this" reads better than
+// "new top-level directory" -- but it is not the protection. New tools appear
+// faster than the list grows: .serena turned up in a clone on 3 October and
+// was not here. What caught it is NewTopLevelDirs, which asks the general
+// question instead, and that is the rule to keep working.
 var AgentArtefacts = regexp.MustCompile(
-	`(?i)(^|/)(\.agents?|\.claude|\.cursor|\.aider[^/]*|\.github/copilot[^/]*)/` +
+	`(?i)(^|/)(\.agents?|\.claude|\.cursor|\.aider[^/]*|\.serena|\.windsurf|\.continue|` +
+		`\.github/copilot[^/]*)/` +
 		`|(^|/)(SKILL|AGENTS|CLAUDE|GEMINI|\.cursorrules)\.md$` +
 		`|(^|/)\.aider\.`)
 

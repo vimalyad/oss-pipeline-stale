@@ -67,17 +67,68 @@ func (l *Lock) Acquire(what string) error {
 	return nil
 }
 
+// create takes the lock, atomically and fully formed.
+//
+// Write-then-link rather than O_EXCL-then-write. The obvious version creates
+// an empty file and fills it in a second step, which leaves a window where the
+// file exists but does not parse -- and current() reads an unparseable file as
+// "no live holder", so a concurrent run deletes it and takes the lock. Three
+// goroutines could hold it at once, which TestConcurrentAcquireHasExactlyOneWinner
+// reproduces reliably once the window is hit.
+//
+// os.Link is the primitive that gives both properties at once: it fails with
+// EEXIST if the destination exists, and the destination it creates is already
+// complete.
 func (l *Lock) create(what string) error {
-	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	pid := os.Getpid()
+	body, err := json.Marshal(holder{
+		PID: pid, What: what, At: float64(time.Now().Unix()),
+	})
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	l.pid = os.Getpid()
+	// A unique name per attempt, not per process.
+	//
+	// Sharing one temp path between goroutines shares its inode, and a hard
+	// link taken while another goroutine is mid-truncate points at a
+	// zero-length file. current() reads that as unparseable, unparseable as
+	// "no live holder", and the lock gets stolen from its rightful owner --
+	// two winners in roughly one run of twelve.
+	f, err := os.CreateTemp(filepath.Dir(l.path), ".lock-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if _, err := f.Write(append(body, '\n')); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+
+	if err := os.Link(tmp, l.path); err != nil {
+		// Normalise to os.ErrExist so the caller's reclaim path, which keys
+		// off it, keeps working across filesystems that report this
+		// differently.
+		if errors.Is(err, os.ErrExist) || isExist(err) {
+			return os.ErrExist
+		}
+		return err
+	}
+	l.pid = pid
 	l.mine = true
-	return json.NewEncoder(f).Encode(holder{
-		PID: l.pid, What: what, At: float64(time.Now().Unix()),
-	})
+	return nil
+}
+
+// isExist unwraps the *os.LinkError that os.Link returns.
+func isExist(err error) bool {
+	var le *os.LinkError
+	if errors.As(err, &le) {
+		return errors.Is(le.Err, os.ErrExist)
+	}
+	return false
 }
 
 // current reports the live holder, if there is one. A lock is not live if the
